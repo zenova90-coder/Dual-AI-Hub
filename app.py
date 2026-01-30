@@ -34,7 +34,7 @@ def get_best_available_model():
 
 TARGET_MODEL = get_best_available_model()
 
-# --- 4. 데이터 관리 (파일 저장) ---
+# --- 4. 데이터 관리 ---
 DB_FILE = "chat_db.json"
 
 def load_data():
@@ -62,8 +62,18 @@ def get_active_session():
         st.session_state.active_index = 0
     return st.session_state.sessions[st.session_state.active_index]
 
-# --- 6. 사이드바 ---
+# --- 6. 사이드바 (역할 설정 기능 추가) ---
 with st.sidebar:
+    st.header("🎭 AI 페르소나 설정")
+    # [NEW] 역할 부여 입력창
+    system_role = st.text_area(
+        "AI들에게 부여할 역할(Role)", 
+        value="너는 각 분야의 최고 전문가다. 사용자에게 친절하고 명확하게 설명하라.",
+        height=100,
+        help="예: 너는 20년 경력의 베테랑 변호사다. 법률 용어를 사용하여 전문적으로 답변하라."
+    )
+    
+    st.divider()
     st.header("🗂️ 대화 기록")
     col1, col2 = st.columns(2)
     with col1:
@@ -102,52 +112,56 @@ if user_input:
         active_session["title"] = user_input
         save_data(st.session_state.sessions)
 
-    with st.status("🚀 AI 심층 분석 진행 중...", expanded=True) as status:
+    with st.status("🚀 설정된 역할로 분석 진행 중...", expanded=True) as status:
         turn_data = {"q": user_input, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")}
 
         try:
-            # 1. 답변
-            st.write("1️⃣ 다온 & 루 답변 작성 중...")
-            model = genai.GenerativeModel(TARGET_MODEL)
-            turn_data["g_resp"] = model.generate_content(user_input).text
+            # 1. 답변 (역할 주입)
+            st.write(f"1️⃣ 답변 생성 중 (역할: {system_role[:10]}...)")
             
+            # 다온 (Gemini) - 프롬프트 앞에 역할 추가
+            model = genai.GenerativeModel(TARGET_MODEL)
+            gemini_prompt = f"System Instruction: {system_role}\n\nQuestion: {user_input}"
+            turn_data["g_resp"] = model.generate_content(gemini_prompt).text
+            
+            # 루 (GPT) - 시스템 메시지로 역할 부여
             o_res = gpt_client.chat.completions.create(
-                model="gpt-4o", messages=[{"role": "user", "content": user_input}]
+                model="gpt-4o", 
+                messages=[
+                    {"role": "system", "content": system_role}, # <--- 여기가 핵심
+                    {"role": "user", "content": user_input}
+                ]
             )
             turn_data["o_resp"] = o_res.choices[0].message.content
 
-            # 2. 분석 (유동적 기준으로 변경됨)
-            st.write("2️⃣ 교차 비판 및 검증 중...")
+            # 2. 분석 (역할 유지)
+            st.write("2️⃣ 전문가적 시각으로 교차 분석 중...")
             
-            # 다온(Gemini)의 분석 프롬프트 수정
-            g_prompt = f"""
-            너는 날카로운 비평가다. 다음은 Chat GPT의 답변이다.
-            사용자의 질문 의도에 맞춰 가장 중요한 평가 기준을 스스로 정하고 비판하라.
-            (예: 코드라면 효율성, 글쓰기라면 독창성 등)
-            형식에 얽매이지 말고 핵심적인 허점이나 누락된 관점을 지적하라.
+            # 다온 프롬프트 (역할 반영)
+            g_an_prompt = f"""
+            [당신의 역할]: {system_role}
+            위 역할의 관점에서, 아래 Chat GPT의 답변을 비판적으로 분석하시오.
+            단순 비난이 아니라, 전문가로서 논리적 허점이나 놓친 부분을 지적하시오.
             
             [Chat GPT 답변]: {turn_data['o_resp']}
             """
-            turn_data["g_an"] = model.generate_content(g_prompt).text
+            turn_data["g_an"] = model.generate_content(g_an_prompt).text
             
-            # 루(GPT)의 분석 프롬프트 수정
-            o_prompt = f"""
-            너는 냉철한 심사위원이다. 다음은 Gemini의 답변이다.
-            이 답변이 사용자의 질문을 얼마나 완벽하게 해결했는지 '상황에 맞는 기준'으로 평가하라.
-            고정된 목차(창의성/논리 등)를 쓰지 말고, 답변의 특성에 따라 자유롭게 강점과 약점을 분석하라.
-            
-            [Gemini 답변]: {turn_data['g_resp']}
-            """
-            o_an = gpt_client.chat.completions.create(
-                model="gpt-4o", messages=[{"role": "user", "content": o_prompt}]
+            # 루 프롬프트 (역할 반영)
+            o_an_res = gpt_client.chat.completions.create(
+                model="gpt-4o", 
+                messages=[
+                    {"role": "system", "content": system_role},
+                    {"role": "user", "content": f"다음 Gemini의 답변을 당신의 전문 분야 관점에서 평가하고, 부족한 점을 지적하시오:\n{turn_data['g_resp']}"}
+                ]
             )
-            turn_data["o_an"] = o_an.choices[0].message.content
+            turn_data["o_an"] = o_an_res.choices[0].message.content
 
             # 3. 결론
             st.write("3️⃣ 최종 결론 도출 중...")
             final_prompt = f"""
-            너는 '최종 의사결정권자'다. 
-            단순 요약이 아니라, 상호 비판(Review) 내용을 적극 수용하여 '업그레이드된 최종 답변'을 작성하라.
+            당신은 {system_role} 역할을 맡은 최종 의사결정권자입니다.
+            상호 비판 내용을 수용하여, 사용자에게 가장 완벽한 전문적 조언을 제공하십시오.
             
             [질문]: {user_input}
             [Gemini 의견]: {turn_data['g_resp']}
