@@ -9,7 +9,7 @@ import concurrent.futures # 병렬 처리를 위한 핵심 라이브러리
 
 # --- 1. 페이지 설정 ---
 st.set_page_config(page_title="Dual-AI Hub (Speed)", layout="wide")
-st.title("⚡ Dual-AI Insight Hub (Speed Edition)")
+st.title("Dual-AI Insight Hub")
 
 # --- 2. API 키 설정 ---
 try:
