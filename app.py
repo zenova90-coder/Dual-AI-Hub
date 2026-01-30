@@ -5,10 +5,11 @@ from datetime import datetime
 import json
 import os
 import time
+import concurrent.futures # 병렬 처리를 위한 핵심 라이브러리
 
 # --- 1. 페이지 설정 ---
-st.set_page_config(page_title="Dual-AI Hub (Pro)", layout="wide")
-st.title("🤖 Dual-AI Insight Hub")
+st.set_page_config(page_title="Dual-AI Hub (Speed)", layout="wide")
+st.title("⚡ Dual-AI Insight Hub (Speed Edition)")
 
 # --- 2. API 키 설정 ---
 try:
@@ -21,7 +22,7 @@ except KeyError:
 genai.configure(api_key=gemini_api_key)
 gpt_client = OpenAI(api_key=gpt_api_key)
 
-# --- 3. 모델 자동 탐색 ---
+# --- 3. 모델 설정 (속도 최적화) ---
 def get_best_available_model():
     try:
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
@@ -32,7 +33,10 @@ def get_best_available_model():
         return models[0] if models else "models/gemini-pro"
     except: return "models/gemini-pro"
 
-TARGET_MODEL = get_best_available_model()
+GEMINI_MODEL = get_best_available_model()
+
+# [중요] 속도를 위해 GPT 모델을 mini로 변경 (원하시면 "gpt-4o"로 수정 가능)
+GPT_MODEL = "gpt-4o-mini" 
 
 # --- 4. 데이터 관리 ---
 DB_FILE = "chat_db.json"
@@ -54,7 +58,6 @@ if "sessions" not in st.session_state:
     st.session_state.sessions = load_data()
     st.session_state.active_index = 0
 
-# [NEW] 역할(System Role)을 저장할 변수 초기화
 if "system_role" not in st.session_state:
     st.session_state.system_role = "너는 각 분야의 최고 전문가다. 사용자에게 친절하고 명확하게 설명하라."
 
@@ -66,25 +69,31 @@ def get_active_session():
         st.session_state.active_index = 0
     return st.session_state.sessions[st.session_state.active_index]
 
-# --- 6. 사이드바 (역할 부여 버튼 추가) ---
+# --- 6. [핵심] 병렬 처리 함수들 ---
+def call_gemini(prompt):
+    model = genai.GenerativeModel(GEMINI_MODEL)
+    return model.generate_content(prompt).text
+
+def call_gpt(messages):
+    response = gpt_client.chat.completions.create(
+        model=GPT_MODEL,
+        messages=messages
+    )
+    return response.choices[0].message.content
+
+# --- 7. 사이드바 ---
 with st.sidebar:
     st.header("🎭 AI 페르소나 설정")
-    
-    # [수정됨] 입력창과 확인 버튼 분리
     input_role = st.text_area(
         "AI들에게 부여할 역할(Role)", 
         value=st.session_state.system_role,
-        height=100,
-        help="예: 너는 냉철한 변호사다. 법적 근거를 들어 설명하라."
+        height=100
     )
-    
-    # [NEW] 적용 버튼 및 완료 메시지
     if st.button("💾 역할 적용하기", use_container_width=True):
         st.session_state.system_role = input_role
-        st.success("✅ 역할 부여 완료! (설정이 저장되었습니다)")
+        st.success("✅ 역할 부여 완료!")
 
     st.divider()
-    
     st.header("🗂️ 대화 기록")
     col1, col2 = st.columns(2)
     with col1:
@@ -112,10 +121,10 @@ with st.sidebar:
                 st.session_state.active_index = i
                 st.rerun()
 
-# --- 7. 메인 로직 ---
+# --- 8. 메인 로직 (병렬 처리 적용) ---
 active_session = get_active_session()
 chat_history = active_session["history"]
-current_role = st.session_state.system_role # 현재 저장된 역할 가져오기
+current_role = st.session_state.system_role
 
 user_input = st.chat_input("질문을 입력하세요...")
 
@@ -124,32 +133,34 @@ if user_input:
         active_session["title"] = user_input
         save_data(st.session_state.sessions)
 
-    with st.status("🚀 설정된 역할로 분석 진행 중...", expanded=True) as status:
+    with st.status("⚡ 초고속 병렬 연산 중...", expanded=True) as status:
         turn_data = {"q": user_input, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")}
-
-        try:
-            # 1. 답변
+        
+        # ThreadPoolExecutor를 사용한 병렬 처리
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            
+            # --- STEP 1: 답변 생성 (동시 출발) ---
             st.write(f"1️⃣ 답변 생성 중 (Role: {current_role[:10]}...)")
             
-            # 다온 (Gemini)
-            model = genai.GenerativeModel(TARGET_MODEL)
+            # Gemini 요청 준비
             gemini_prompt = f"System Instruction: {current_role}\n\nQuestion: {user_input}"
-            turn_data["g_resp"] = model.generate_content(gemini_prompt).text
+            future_g_resp = executor.submit(call_gemini, gemini_prompt)
             
-            # 루 (GPT)
-            o_res = gpt_client.chat.completions.create(
-                model="gpt-4o", 
-                messages=[
-                    {"role": "system", "content": current_role},
-                    {"role": "user", "content": user_input}
-                ]
-            )
-            turn_data["o_resp"] = o_res.choices[0].message.content
+            # GPT 요청 준비
+            gpt_messages = [
+                {"role": "system", "content": current_role},
+                {"role": "user", "content": user_input}
+            ]
+            future_o_resp = executor.submit(call_gpt, gpt_messages)
+            
+            # 결과 대기 및 수집
+            turn_data["g_resp"] = future_g_resp.result()
+            turn_data["o_resp"] = future_o_resp.result()
 
-            # 2. 분석
+            # --- STEP 2: 교차 분석 (동시 출발) ---
             st.write("2️⃣ 자유 토론 및 비평 중...")
             
-            # 다온 프롬프트 (강점/약점 금지)
+            # Gemini에게 GPT 비평 요청
             g_an_prompt = f"""
             [당신의 역할]: {current_role}
             위 역할로서 Chat GPT의 답변을 검토하라.
@@ -161,28 +172,29 @@ if user_input:
             
             [Chat GPT 답변]: {turn_data['o_resp']}
             """
-            turn_data["g_an"] = model.generate_content(g_an_prompt).text
+            future_g_an = executor.submit(call_gemini, g_an_prompt)
             
-            # 루 프롬프트 (강점/약점 금지)
-            o_an_res = gpt_client.chat.completions.create(
-                model="gpt-4o", 
-                messages=[
-                    {"role": "system", "content": current_role},
-                    {"role": "user", "content": f"""
-                    다음 Gemini의 답변을 평가하라.
-                    
-                    [중요 지시사항]:
-                    1. '장점/단점' 리스트를 나열하는 식상한 방식은 금지한다.
-                    2. 이 답변이 {user_input}이라는 문제를 해결하는 데 있어 얼마나 효과적인지, 혹은 어떤 부분이 비현실적인지 핵심만 찔러라.
-                    3. 동료 전문가에게 피드백을 주듯 구체적이고 실질적인 내용을 말하라.
-                    
-                    [Gemini 답변]: {turn_data['g_resp']}
-                    """}
-                ]
-            )
-            turn_data["o_an"] = o_an_res.choices[0].message.content
+            # GPT에게 Gemini 비평 요청
+            o_an_messages = [
+                {"role": "system", "content": current_role},
+                {"role": "user", "content": f"""
+                다음 Gemini의 답변을 평가하라.
+                
+                [중요 지시사항]:
+                1. '장점/단점' 리스트를 나열하는 식상한 방식은 금지한다.
+                2. 이 답변이 {user_input}이라는 문제를 해결하는 데 있어 얼마나 효과적인지, 혹은 어떤 부분이 비현실적인지 핵심만 찔러라.
+                3. 동료 전문가에게 피드백을 주듯 구체적이고 실질적인 내용을 말하라.
+                
+                [Gemini 답변]: {turn_data['g_resp']}
+                """}
+            ]
+            future_o_an = executor.submit(call_gpt, o_an_messages)
+            
+            # 결과 수집
+            turn_data["g_an"] = future_g_an.result()
+            turn_data["o_an"] = future_o_an.result()
 
-            # 3. 결론
+            # --- STEP 3: 최종 결론 (이건 순차적으로) ---
             st.write("3️⃣ 최종 결론 도출 중...")
             final_prompt = f"""
             당신은 {current_role} 역할을 맡은 최종 의사결정권자입니다.
@@ -196,23 +208,18 @@ if user_input:
             [GPT 비평]: {turn_data['o_an']}
             """
             
-            final_res = gpt_client.chat.completions.create(
-                model="gpt-4o", messages=[{"role": "user", "content": final_prompt}]
-            )
-            turn_data["final_con"] = final_res.choices[0].message.content
+            # 결론은 가장 똑똑한 GPT에게 맡김 (여기서는 그대로 둠)
+            turn_data["final_con"] = call_gpt([{"role": "user", "content": final_prompt}])
 
             # 저장 및 완료
             active_session["history"].append(turn_data)
             save_data(st.session_state.sessions)
             
             status.update(label="✅ 분석 완료!", state="complete", expanded=False)
-            time.sleep(1)
+            # time.sleep(1) # 속도를 위해 딜레이 삭제
             st.rerun()
 
-        except Exception as e:
-            st.error(f"❌ 에러 발생: {e}")
-
-# --- 8. 화면 출력 ---
+# --- 9. 화면 출력 ---
 if chat_history:
     st.caption(f"🕒 현재 대화: {len(chat_history)}개의 분석 기록")
     total_count = len(chat_history)
