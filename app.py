@@ -24,28 +24,38 @@ if "o_resp" not in st.session_state: st.session_state.o_resp = ""
 if "g_an" not in st.session_state: st.session_state.g_an = ""
 if "o_an" not in st.session_state: st.session_state.o_an = ""
 
+# --- 3. 다온(Gemini) 모델 자동 찾기 함수 (핵심 기능) ---
+def ask_daon(prompt):
+    # 시도할 모델 목록 (최신순 -> 구형순)
+    models_to_try = ['gemini-1.5-flash', 'gemini-pro', 'gemini-1.0-pro']
+    
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            return response.text # 성공하면 바로 반환
+        except Exception:
+            continue # 실패하면 다음 모델 시도
+            
+    return "❌ 모든 모델 연결 실패. API 키나 구글 클라우드 설정을 확인해주세요."
+
 # --- 탭 구성 ---
 tab1, tab2 = st.tabs(["💬 동시 질문", "📊 교차 분석"])
 
 # --- 탭 1: 질문하기 ---
 with tab1:
-    st.info("💡 API 키가 정상적으로 연결되었습니다.") # 이름 제거 완료
+    # ✨ 요청하신 문구로 변경 완료 ✨
+    st.info("👋 사용자님 반갑습니다. 무엇을 도와드릴까요?") 
 
-    # [핵심 변경] text_area 대신 chat_input 사용
-    # 엔터를 치면 바로 실행되고, Shift+Enter로 줄바꿈이 됩니다.
-    if user_input := st.chat_input("질문을 입력하고 Enter를 누르세요 (줄바꿈은 Shift+Enter)"):
+    # 채팅 입력창 (Enter로 전송, Shift+Enter로 줄바꿈)
+    if user_input := st.chat_input("질문을 입력하세요..."):
         
         # 사용자가 입력한 내용 보여주기
         st.write(f"**🙋‍♂️ 질문:** {user_input}")
         
         with st.spinner("다온과 루가 답변을 작성 중입니다..."):
-            # 1. 다온 (Gemini) 호출 - [안전한 gemini-pro 모델로 변경]
-            try:
-                model = genai.GenerativeModel('gemini-pro')
-                response = model.generate_content(user_input)
-                st.session_state.g_resp = response.text
-            except Exception as e:
-                st.session_state.g_resp = f"❌ 다온 에러: {str(e)}"
+            # 1. 다온 (Gemini) 호출 - [자동 우회 함수 사용]
+            st.session_state.g_resp = ask_daon(user_input)
 
             # 2. 루 (GPT) 호출
             try:
@@ -85,12 +95,7 @@ with tab2:
         elif st.session_state.g_resp and st.session_state.o_resp:
             with st.spinner("다온과 루가 서로 토론 중입니다..."):
                 # 다온이 루를 분석
-                try:
-                    model = genai.GenerativeModel('gemini-pro')
-                    res = model.generate_content(f"다음은 '루(GPT)'의 답변입니다. 비판적으로 분석해주세요:\n{st.session_state.o_resp}")
-                    st.session_state.g_an = res.text
-                except Exception as e:
-                    st.session_state.g_an = f"분석 실패: {e}"
+                st.session_state.g_an = ask_daon(f"다음은 '루(GPT)'의 답변입니다. 비판적으로 분석해주세요:\n{st.session_state.o_resp}")
 
                 # 루가 다온을 분석
                 try:
