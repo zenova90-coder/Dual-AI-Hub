@@ -1,1 +1,17 @@
-
+{
+  "minju": {
+    "pw": "1234",
+    "credits": 9999,
+    "name": "양민주(Admin)"
+  },
+  "guest": {
+    "pw": "0000",
+    "credits": 3,
+    "name": "체험판손님"
+  },
+  "friend1": {
+    "pw": "5678",
+    "credits": 50,
+    "name": "철수"
+  }
+}
