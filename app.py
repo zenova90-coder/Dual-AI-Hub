@@ -24,37 +24,30 @@ if "o_resp" not in st.session_state: st.session_state.o_resp = ""
 if "g_an" not in st.session_state: st.session_state.g_an = ""
 if "o_an" not in st.session_state: st.session_state.o_an = ""
 
-# --- 3. 다온(Gemini) 모델 자동 찾기 함수 (핵심 기능) ---
+# --- 3. 다온(Gemini) 모델 자동 찾기 및 에러 상세 출력 ---
 def ask_daon(prompt):
-    # 시도할 모델 목록 (최신순 -> 구형순)
-    models_to_try = ['gemini-1.5-flash', 'gemini-pro', 'gemini-1.0-pro']
-    
-    for model_name in models_to_try:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            return response.text # 성공하면 바로 반환
-        except Exception:
-            continue # 실패하면 다음 모델 시도
-            
-    return "❌ 모든 모델 연결 실패. API 키나 구글 클라우드 설정을 확인해주세요."
+    # 가장 기본 모델인 gemini-pro 하나만 집중 공략합니다.
+    try:
+        model = genai.GenerativeModel('gemini-pro')
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        # 민주님, 이 부분이 중요합니다! 진짜 에러 내용을 보여줍니다.
+        return f"🚨 상세 에러 로그: {e}"
 
 # --- 탭 구성 ---
 tab1, tab2 = st.tabs(["💬 동시 질문", "📊 교차 분석"])
 
 # --- 탭 1: 질문하기 ---
 with tab1:
-    # ✨ 요청하신 문구로 변경 완료 ✨
-    st.info("👋 사용자님 반갑습니다. 무엇을 도와드릴까요?") 
+    st.info("👋 사용자님 반갑습니다. 무엇을 도와드릴까요?")
 
-    # 채팅 입력창 (Enter로 전송, Shift+Enter로 줄바꿈)
     if user_input := st.chat_input("질문을 입력하세요..."):
         
-        # 사용자가 입력한 내용 보여주기
         st.write(f"**🙋‍♂️ 질문:** {user_input}")
         
         with st.spinner("다온과 루가 답변을 작성 중입니다..."):
-            # 1. 다온 (Gemini) 호출 - [자동 우회 함수 사용]
+            # 1. 다온 (Gemini) 호출
             st.session_state.g_resp = ask_daon(user_input)
 
             # 2. 루 (GPT) 호출
@@ -67,7 +60,7 @@ with tab1:
             except Exception as e:
                 st.session_state.o_resp = f"❌ 루 에러: {str(e)}"
 
-        # 결과 출력 (2단 구성)
+        # 결과 출력
         col1, col2 = st.columns(2)
         with col1:
             st.info("💎 다온 (Gemini)")
@@ -76,9 +69,8 @@ with tab1:
             st.success("🧠 루 (GPT)")
             st.write(st.session_state.o_resp)
             
-    # 이전에 대화한 내용이 있다면 계속 보여주기
+    # 이전 대화 유지
     elif st.session_state.g_resp:
-         st.write(f"**✅ 이전 질문 결과**")
          col1, col2 = st.columns(2)
          with col1:
              st.info("💎 다온 (Gemini)")
@@ -90,7 +82,7 @@ with tab1:
 # --- 탭 2: 교차 분석 ---
 with tab2:
     if st.button("교차 분석 시작"):
-        if "❌" in st.session_state.g_resp or "❌" in st.session_state.o_resp:
+        if "🚨" in st.session_state.g_resp or "❌" in st.session_state.o_resp:
             st.error("이전 단계 에러로 분석할 수 없습니다.")
         elif st.session_state.g_resp and st.session_state.o_resp:
             with st.spinner("다온과 루가 서로 토론 중입니다..."):
