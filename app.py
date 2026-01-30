@@ -54,6 +54,10 @@ if "sessions" not in st.session_state:
     st.session_state.sessions = load_data()
     st.session_state.active_index = 0
 
+# [NEW] 역할(System Role)을 저장할 변수 초기화
+if "system_role" not in st.session_state:
+    st.session_state.system_role = "너는 각 분야의 최고 전문가다. 사용자에게 친절하고 명확하게 설명하라."
+
 if "active_index" not in st.session_state:
     st.session_state.active_index = 0
 
@@ -62,16 +66,25 @@ def get_active_session():
         st.session_state.active_index = 0
     return st.session_state.sessions[st.session_state.active_index]
 
-# --- 6. 사이드바 (역할 설정 기능) ---
+# --- 6. 사이드바 (역할 부여 버튼 추가) ---
 with st.sidebar:
     st.header("🎭 AI 페르소나 설정")
-    system_role = st.text_area(
+    
+    # [수정됨] 입력창과 확인 버튼 분리
+    input_role = st.text_area(
         "AI들에게 부여할 역할(Role)", 
-        value="너는 각 분야의 최고 전문가다. 사용자에게 친절하고 명확하게 설명하라.",
-        height=100
+        value=st.session_state.system_role,
+        height=100,
+        help="예: 너는 냉철한 변호사다. 법적 근거를 들어 설명하라."
     )
     
+    # [NEW] 적용 버튼 및 완료 메시지
+    if st.button("💾 역할 적용하기", use_container_width=True):
+        st.session_state.system_role = input_role
+        st.success("✅ 역할 부여 완료! (설정이 저장되었습니다)")
+
     st.divider()
+    
     st.header("🗂️ 대화 기록")
     col1, col2 = st.columns(2)
     with col1:
@@ -102,6 +115,7 @@ with st.sidebar:
 # --- 7. 메인 로직 ---
 active_session = get_active_session()
 chat_history = active_session["history"]
+current_role = st.session_state.system_role # 현재 저장된 역할 가져오기
 
 user_input = st.chat_input("질문을 입력하세요...")
 
@@ -114,30 +128,30 @@ if user_input:
         turn_data = {"q": user_input, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")}
 
         try:
-            # 1. 답변 (역할 주입)
-            st.write(f"1️⃣ 답변 생성 중 (역할: {system_role[:10]}...)")
+            # 1. 답변
+            st.write(f"1️⃣ 답변 생성 중 (Role: {current_role[:10]}...)")
             
             # 다온 (Gemini)
             model = genai.GenerativeModel(TARGET_MODEL)
-            gemini_prompt = f"System Instruction: {system_role}\n\nQuestion: {user_input}"
+            gemini_prompt = f"System Instruction: {current_role}\n\nQuestion: {user_input}"
             turn_data["g_resp"] = model.generate_content(gemini_prompt).text
             
             # 루 (GPT)
             o_res = gpt_client.chat.completions.create(
                 model="gpt-4o", 
                 messages=[
-                    {"role": "system", "content": system_role},
+                    {"role": "system", "content": current_role},
                     {"role": "user", "content": user_input}
                 ]
             )
             turn_data["o_resp"] = o_res.choices[0].message.content
 
-            # 2. 분석 (완전히 자유로운 형식 유도)
+            # 2. 분석
             st.write("2️⃣ 자유 토론 및 비평 중...")
             
-            # [수정됨] 다온 프롬프트: 강점/약점 금지령
+            # 다온 프롬프트 (강점/약점 금지)
             g_an_prompt = f"""
-            [당신의 역할]: {system_role}
+            [당신의 역할]: {current_role}
             위 역할로서 Chat GPT의 답변을 검토하라.
             
             [중요 지시사항]:
@@ -149,11 +163,11 @@ if user_input:
             """
             turn_data["g_an"] = model.generate_content(g_an_prompt).text
             
-            # [수정됨] 루 프롬프트: 강점/약점 금지령
+            # 루 프롬프트 (강점/약점 금지)
             o_an_res = gpt_client.chat.completions.create(
                 model="gpt-4o", 
                 messages=[
-                    {"role": "system", "content": system_role},
+                    {"role": "system", "content": current_role},
                     {"role": "user", "content": f"""
                     다음 Gemini의 답변을 평가하라.
                     
@@ -171,7 +185,7 @@ if user_input:
             # 3. 결론
             st.write("3️⃣ 최종 결론 도출 중...")
             final_prompt = f"""
-            당신은 {system_role} 역할을 맡은 최종 의사결정권자입니다.
+            당신은 {current_role} 역할을 맡은 최종 의사결정권자입니다.
             두 AI의 의견과 상호 비판을 종합하여 최적의 솔루션을 제시하십시오.
             비평에서 지적된 문제점은 반드시 수정하여 반영하십시오.
             
