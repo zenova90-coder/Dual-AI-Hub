@@ -4,12 +4,45 @@ from openai import OpenAI
 from datetime import datetime
 import json
 import os
-import time
 import concurrent.futures # 병렬 처리를 위한 핵심 라이브러리
 
-# --- 1. 페이지 설정 ---
-st.set_page_config(page_title="Dual-AI Hub (Speed)", layout="wide")
-st.title("Dual-AI Insight Hub")
+# --- 1. 페이지 설정 (가장 먼저 실행) ---
+st.set_page_config(page_title="Dual-AI Hub (Private)", layout="wide")
+
+# ==========================================
+# 🔒 [보안] 비밀번호 잠금 장치
+# ==========================================
+def check_password():
+    """비밀번호가 맞는지 확인하는 함수"""
+    if st.session_state.get("password_correct", False):
+        return True
+
+    st.header("🔒 접속 권한 확인")
+    st.write("관리자가 설정한 비밀번호를 입력하세요.")
+    
+    password_input = st.text_input("비밀번호", type="password")
+    
+    if st.button("로그인"):
+        try:
+            if password_input == st.secrets["APP_PASSWORD"]:
+                st.session_state["password_correct"] = True
+                st.rerun()
+            else:
+                st.error("❌ 비밀번호가 틀렸습니다.")
+        except KeyError:
+            st.error("🚨 secrets.toml에 APP_PASSWORD 설정이 없습니다.")
+    
+    return False
+
+# 비밀번호 통과 못하면 여기서 중단
+if not check_password():
+    st.stop()
+
+# ==========================================
+# ⚡ 메인 앱 시작
+# ==========================================
+
+st.title("⚡ Dual-AI Insight Hub")
 
 # --- 2. API 키 설정 ---
 try:
@@ -34,8 +67,6 @@ def get_best_available_model():
     except: return "models/gemini-pro"
 
 GEMINI_MODEL = get_best_available_model()
-
-# [중요] 속도를 위해 GPT 모델을 mini로 변경 (원하시면 "gpt-4o"로 수정 가능)
 GPT_MODEL = "gpt-4o-mini" 
 
 # --- 4. 데이터 관리 ---
@@ -69,7 +100,7 @@ def get_active_session():
         st.session_state.active_index = 0
     return st.session_state.sessions[st.session_state.active_index]
 
-# --- 6. [핵심] 병렬 처리 함수들 ---
+# --- 6. 병렬 처리 함수들 ---
 def call_gemini(prompt):
     model = genai.GenerativeModel(GEMINI_MODEL)
     return model.generate_content(prompt).text
@@ -83,6 +114,8 @@ def call_gpt(messages):
 
 # --- 7. 사이드바 ---
 with st.sidebar:
+    st.success("🔐 로그인 완료")
+    
     st.header("🎭 AI 페르소나 설정")
     input_role = st.text_area(
         "AI들에게 부여할 역할(Role)", 
@@ -94,7 +127,18 @@ with st.sidebar:
         st.success("✅ 역할 부여 완료!")
 
     st.divider()
+    
+    # 대화방 관리
     st.header("🗂️ 대화 기록")
+    
+    # 제목 수정 기능
+    active_session = get_active_session()
+    new_title = st.text_input("🏷️ 방 이름 수정", value=active_session["title"], key=f"title_edit_{st.session_state.active_index}")
+    if new_title != active_session["title"]:
+        active_session["title"] = new_title
+        save_data(st.session_state.sessions)
+        st.rerun()
+
     col1, col2 = st.columns(2)
     with col1:
         if st.button("➕ 새 대화", use_container_width=True):
@@ -129,38 +173,35 @@ current_role = st.session_state.system_role
 user_input = st.chat_input("질문을 입력하세요...")
 
 if user_input:
-    if len(chat_history) == 0:
-        active_session["title"] = user_input
+    # 첫 질문 시 제목 자동 설정
+    if len(chat_history) == 0 and active_session["title"] == "새 대화":
+        active_session["title"] = user_input[:20]
         save_data(st.session_state.sessions)
+        st.rerun()
 
     with st.status("⚡ 초고속 병렬 연산 중...", expanded=True) as status:
         turn_data = {"q": user_input, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")}
         
-        # ThreadPoolExecutor를 사용한 병렬 처리
         with concurrent.futures.ThreadPoolExecutor() as executor:
             
-            # --- STEP 1: 답변 생성 (동시 출발) ---
+            # --- STEP 1: 답변 생성 ---
             st.write(f"1️⃣ 답변 생성 중 (Role: {current_role[:10]}...)")
             
-            # Gemini 요청 준비
             gemini_prompt = f"System Instruction: {current_role}\n\nQuestion: {user_input}"
             future_g_resp = executor.submit(call_gemini, gemini_prompt)
             
-            # GPT 요청 준비
             gpt_messages = [
                 {"role": "system", "content": current_role},
                 {"role": "user", "content": user_input}
             ]
             future_o_resp = executor.submit(call_gpt, gpt_messages)
             
-            # 결과 대기 및 수집
             turn_data["g_resp"] = future_g_resp.result()
             turn_data["o_resp"] = future_o_resp.result()
 
-            # --- STEP 2: 교차 분석 (동시 출발) ---
+            # --- STEP 2: 교차 분석 ---
             st.write("2️⃣ 자유 토론 및 비평 중...")
             
-            # Gemini에게 GPT 비평 요청
             g_an_prompt = f"""
             [당신의 역할]: {current_role}
             위 역할로서 Chat GPT의 답변을 검토하라.
@@ -174,7 +215,6 @@ if user_input:
             """
             future_g_an = executor.submit(call_gemini, g_an_prompt)
             
-            # GPT에게 Gemini 비평 요청
             o_an_messages = [
                 {"role": "system", "content": current_role},
                 {"role": "user", "content": f"""
@@ -190,11 +230,10 @@ if user_input:
             ]
             future_o_an = executor.submit(call_gpt, o_an_messages)
             
-            # 결과 수집
             turn_data["g_an"] = future_g_an.result()
             turn_data["o_an"] = future_o_an.result()
 
-            # --- STEP 3: 최종 결론 (이건 순차적으로) ---
+            # --- STEP 3: 최종 결론 ---
             st.write("3️⃣ 최종 결론 도출 중...")
             final_prompt = f"""
             당신은 {current_role} 역할을 맡은 최종 의사결정권자입니다.
@@ -208,20 +247,17 @@ if user_input:
             [GPT 비평]: {turn_data['o_an']}
             """
             
-            # 결론은 가장 똑똑한 GPT에게 맡김 (여기서는 그대로 둠)
             turn_data["final_con"] = call_gpt([{"role": "user", "content": final_prompt}])
 
-            # 저장 및 완료
             active_session["history"].append(turn_data)
             save_data(st.session_state.sessions)
             
             status.update(label="✅ 분석 완료!", state="complete", expanded=False)
-            # time.sleep(1) # 속도를 위해 딜레이 삭제
             st.rerun()
 
 # --- 9. 화면 출력 ---
 if chat_history:
-    st.caption(f"🕒 현재 대화: {len(chat_history)}개의 분석 기록")
+    st.caption(f"🕒 현재 대화: {len(chat_history)}개의 분석 기록 | 🏷️ {active_session['title']}")
     total_count = len(chat_history)
     
     for i, chat in enumerate(reversed(chat_history)):
