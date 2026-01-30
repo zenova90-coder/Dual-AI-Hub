@@ -83,7 +83,8 @@ def call_gpt(messages):
 
 # --- 7. 사이드바 ---
 with st.sidebar:
-    st.header("🎭 AI 페르소나 설정")
+    # [수정 1] AI 페르소나 설정 -> AI 역할
+    st.header("🎭 AI 역할") 
     input_role = st.text_area(
         "AI들에게 부여할 역할(Role)", 
         value=st.session_state.system_role,
@@ -133,14 +134,16 @@ if user_input:
         active_session["title"] = user_input
         save_data(st.session_state.sessions)
 
-    with st.status("⚡ 초고속 병렬 연산 중...", expanded=True) as status:
+    # [수정 2] 초고속 병렬 연산 중... -> 3단계 작업 진행 중...
+    with st.status("⚡ 3단계 작업 진행 중...", expanded=True) as status:
         turn_data = {"q": user_input, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")}
         
         # ThreadPoolExecutor를 사용한 병렬 처리
         with concurrent.futures.ThreadPoolExecutor() as executor:
             
             # --- STEP 1: 답변 생성 (동시 출발) ---
-            st.write(f"1️⃣ 답변 생성 중 (Role: {current_role[:10]}...)")
+            # [수정 3] (Role: ...) 부분 삭제
+            st.write("1️⃣ 답변 생성 중...") 
             
             # Gemini 요청 준비
             gemini_prompt = f"System Instruction: {current_role}\n\nQuestion: {user_input}"
@@ -208,7 +211,7 @@ if user_input:
             [GPT 비평]: {turn_data['o_an']}
             """
             
-            # 결론은 가장 똑똑한 GPT에게 맡김 (여기서는 그대로 둠)
+            # 결론은 가장 똑똑한 GPT에게 맡김
             turn_data["final_con"] = call_gpt([{"role": "user", "content": final_prompt}])
 
             # 저장 및 완료
@@ -216,7 +219,6 @@ if user_input:
             save_data(st.session_state.sessions)
             
             status.update(label="✅ 분석 완료!", state="complete", expanded=False)
-            # time.sleep(1) # 속도를 위해 딜레이 삭제
             st.rerun()
 
 # --- 9. 화면 출력 ---
@@ -228,7 +230,8 @@ if chat_history:
         idx = total_count - i
         st.markdown(f"### Q{idx}. {chat['q']}")
         
-        tab1, tab2, tab3 = st.tabs(["💬 의견 대립", "⚔️ 교차 검증", "🏆 최종 결론"])
+        # [수정 4] 의견 대립 -> 의견 제시
+        tab1, tab2, tab3 = st.tabs(["💬 의견 제시", "⚔️ 교차 검증", "🏆 최종 결론"])
         
         with tab1:
             c1, c2 = st.columns(2)
