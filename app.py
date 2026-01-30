@@ -20,9 +20,34 @@ except KeyError:
 
 genai.configure(api_key=gemini_api_key)
 gpt_client = OpenAI(api_key=gpt_api_key)
-TARGET_MODEL = "gemini-1.5-flash"
 
-# --- 3. 데이터 관리 (파일 저장/로드) ---
+# --- 3. [수정됨] 사용 가능한 모델 자동 탐색 (404 에러 방지) ---
+def get_best_available_model():
+    """
+    API에 직접 물어봐서 현재 사용 가능한 모델 중 가장 좋은 것을 가져옵니다.
+    """
+    try:
+        # 모델 목록 조회
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # 우선순위: 1.5 Flash -> 1.5 Pro -> 1.0 Pro
+        # models/ 접두사가 있든 없든 유연하게 찾음
+        priority_keywords = ['1.5-flash', '1.5-pro', 'gemini-pro']
+        
+        for keyword in priority_keywords:
+            for m in models:
+                if keyword in m:
+                    return m # 찾은 모델 이름 그대로 반환 (가장 확실함)
+        
+        return models[0] if models else "models/gemini-pro"
+    except:
+        # 목록 조회 실패 시 기본값 시도
+        return "models/gemini-pro"
+
+# 시스템이 찾은 확실한 모델명
+TARGET_MODEL = get_best_available_model()
+
+# --- 4. 데이터 관리 (파일 저장/로드) ---
 DB_FILE = "chat_db.json"
 
 def load_data():
@@ -38,7 +63,7 @@ def save_data(sessions):
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(sessions, f, ensure_ascii=False, indent=4)
 
-# --- 4. 세션 초기화 ---
+# --- 5. 세션 초기화 ---
 if "sessions" not in st.session_state:
     st.session_state.sessions = load_data()
     st.session_state.active_index = 0
@@ -47,11 +72,12 @@ if "active_index" not in st.session_state:
     st.session_state.active_index = 0
 
 def get_active_session():
+    # 인덱스 범위 오류 방지
     if st.session_state.active_index >= len(st.session_state.sessions):
         st.session_state.active_index = 0
     return st.session_state.sessions[st.session_state.active_index]
 
-# --- 5. 사이드바 ---
+# --- 6. 사이드바 ---
 with st.sidebar:
     st.header("🗂️ 대화 기록")
     
@@ -84,25 +110,29 @@ with st.sidebar:
                 st.session_state.active_index = i
                 st.rerun()
 
-# --- 6. 메인 로직 (처리) ---
+    # (디버깅용) 현재 연결된 모델이 무엇인지 작게 표시 (필요 없으면 삭제 가능)
+    st.caption(f"Connected: {TARGET_MODEL}")
+
+# --- 7. 메인 로직 ---
 active_session = get_active_session()
 chat_history = active_session["history"]
 
 user_input = st.chat_input("질문을 입력하세요...")
 
 if user_input:
-    # 첫 질문이면 제목 자동 설정
+    # 제목 자동 설정
     if len(chat_history) == 0:
         active_session["title"] = user_input
         save_data(st.session_state.sessions)
 
-    # 상태창 표시 (작업 진행 중에만 보이고, 끝나면 사라짐)
     with st.status("🚀 AI 심층 분석 진행 중...", expanded=True) as status:
         turn_data = {"q": user_input, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")}
 
         try:
             # 1. 답변
             st.write("1️⃣ 다온 & 루 답변 작성 중...")
+            
+            # [수정됨] 자동 탐색된 모델명 사용
             model = genai.GenerativeModel(TARGET_MODEL)
             turn_data["g_resp"] = model.generate_content(user_input).text
             
@@ -135,28 +165,27 @@ if user_input:
             )
             turn_data["final_con"] = final_res.choices[0].message.content
 
-            # 저장
+            # 저장 및 완료 처리
             active_session["history"].append(turn_data)
             save_data(st.session_state.sessions)
             
-            # [중요] 상태창을 '완료'로 바꾸고 잠시 후 리런하여 상태창 자체를 없앰
-            status.update(label="✅ 분석 완료! 결과를 상단에 표시합니다.", state="complete", expanded=False)
-            time.sleep(1) # 사용자가 '완료' 메시지를 볼 수 있게 1초 대기
+            status.update(label="✅ 분석 완료!", state="complete", expanded=False)
+            time.sleep(1)
             st.rerun()
 
         except Exception as e:
-            st.error(f"에러 발생: {e}")
+            st.error(f"❌ 에러 발생: {e}")
+            # 에러 발생 시 진행 멈춤
 
-# --- 7. 화면 출력 (최신순 정렬) ---
+# --- 8. 화면 출력 (최신순) ---
 if chat_history:
     st.caption(f"🕒 현재 대화: {len(chat_history)}개의 분석 기록")
     
-    # [수정됨] reversed()를 사용하여 최신 질문이 맨 위에 오도록 함
-    # Q 번호는 여전히 순서대로(Q3, Q2, Q1) 보이게 계산
     total_count = len(chat_history)
     
+    # 최신 질문이 맨 위에 오도록 역순 반복
     for i, chat in enumerate(reversed(chat_history)):
-        idx = total_count - i  # 3, 2, 1 순서로 번호 매기기
+        idx = total_count - i
         
         st.markdown(f"### Q{idx}. {chat['q']}")
         
@@ -183,4 +212,4 @@ if chat_history:
         with tab3:
             st.markdown(chat['final_con'])
             
-        st.divider() # 대화 사이 구분선
+        st.divider()
