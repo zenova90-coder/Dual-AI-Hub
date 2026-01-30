@@ -6,214 +6,256 @@ import os
 from datetime import datetime
 
 # 페이지 설정
-st.set_page_config(page_title="Dual-AI Hub", layout="wide")
-st.title("🤖 Dual-AI Insight Hub")
+st.set_page_config(page_title="Dual-AI Hub Pro", layout="wide")
 
-# --- 1. 파일 기반 히스토리 관리 함수 ---
+# --- [관리자 기능] 사용자 장부 및 기록 관리 ---
+USER_DB_FILE = "users.json"
 HISTORY_FILE = "chat_history.json"
 
-def load_history():
-    if not os.path.exists(HISTORY_FILE):
-        return []
-    try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return []
+def load_users():
+    if not os.path.exists(USER_DB_FILE):
+        default_db = {
+            "minju": {"pw": "1234", "credits": 9999, "name": "양민주(Admin)"},
+            "guest": {"pw": "0000", "credits": 3, "name": "체험판손님"} 
+        }
+        with open(USER_DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(default_db, f)
+        return default_db
+    with open(USER_DB_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-def save_history(new_entry):
-    history = load_history()
-    history.insert(0, new_entry) # 최신 글을 맨 위로
+def deduct_credit(username):
+    users = load_users()
+    if users[username]["credits"] > 0:
+        users[username]["credits"] -= 1
+        with open(USER_DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(users, f, indent=4)
+        return True
+    return False
+
+# 히스토리: 이번에는 '세션 전체(여러 질문)'를 저장하는 구조로 변경
+def save_session_history(username, session_data):
+    if not session_data: return
+    
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            history = json.load(f)
+    else:
+        history = []
+    
+    # 저장할 데이터: 첫 번째 질문을 제목으로 사용
+    record = {
+        "user": username,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "title": session_data[0]['q'][:15] + "...", # 첫 질문 요약
+        "dialogue": session_data # 대화 전체 리스트
+    }
+    
+    history.insert(0, record)
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=4)
 
-def delete_history():
-    if os.path.exists(HISTORY_FILE):
-        os.remove(HISTORY_FILE)
+def load_history_list(username):
+    if not os.path.exists(HISTORY_FILE): return []
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            all_history = json.load(f)
+            return [h for h in all_history if h.get("user") == username]
+    except: return []
 
-# --- 2. API 키 및 모델 설정 ---
+# --- API 키 설정 ---
 try:
     gemini_api_key = st.secrets["GEMINI_API_KEY"]
     gpt_api_key = st.secrets["GPT_API_KEY"]
-except FileNotFoundError:
-    st.error("🚨 Secrets 설정이 안 되어 있습니다.")
+    genai.configure(api_key=gemini_api_key)
+    gpt_client = OpenAI(api_key=gpt_api_key)
+except:
+    st.error("API 키 설정이 필요합니다.")
     st.stop()
 
-genai.configure(api_key=gemini_api_key)
-gpt_client = OpenAI(api_key=gpt_api_key)
+# --- 모델 설정 ---
+def get_gemini_model():
+    return 'gemini-pro' # 안정성 우선
 
-# 세션 상태 초기화
-if "current_view" not in st.session_state: 
-    # 현재 화면에 보여줄 데이터 (질문, 답변, 분석, 결론)
-    st.session_state.current_view = {
-        "q": "", "g_resp": "", "o_resp": "", 
-        "g_an": "", "o_an": "", "final_con": "",
-        "model_name": ""
-    }
+valid_model_name = get_gemini_model()
 
-# --- 3. [닥터 다온] 모델 선택 로직 ---
-def get_available_gemini_model():
-    try:
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        preferred_order = ['models/gemini-1.5-flash', 'models/gemini-pro', 'models/gemini-1.0-pro']
-        for model in preferred_order:
-            if model in available_models:
-                return model
-        if available_models: return available_models[0]
-        return None
-    except: return None
+# ==========================================
+# 🔐 로그인 화면
+# ==========================================
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.username = ""
 
-valid_model_name = get_available_gemini_model()
-if not valid_model_name: valid_model_name = "gemini-pro"
+if not st.session_state.logged_in:
+    st.title("🔒 Dual-AI Hub 로그인")
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        input_id = st.text_input("아이디")
+        input_pw = st.text_input("비밀번호", type="password")
+        if st.button("로그인"):
+            users = load_users()
+            if input_id in users and users[input_id]["pw"] == input_pw:
+                st.session_state.logged_in = True
+                st.session_state.username = input_id
+                st.rerun()
+            else:
+                st.error("로그인 실패")
+    st.stop()
 
-# --- 4. 사이드바 (기록 보관소) ---
+# ==========================================
+# 🏠 메인 서비스 화면
+# ==========================================
+user_db = load_users()
+current_user = st.session_state.username
+current_credits = user_db[current_user]["credits"]
+
+# 사이드바 설정
+st.sidebar.title(f"👤 {user_db[current_user]['name']}")
+st.sidebar.caption(f"잔여 이용권: {current_credits}회")
+st.sidebar.progress(min(current_credits / 10, 1.0))
+
+if current_credits <= 0:
+    st.error("이용권이 부족합니다.")
+    st.stop()
+
+st.title("🤖 Dual-AI Insight Hub")
+
+# --- 세션 상태 관리 (대화 리스트) ---
+# current_chat_log: 질문과 답변들이 리스트 형태로 쌓임 [{q:..., a:..., ...}, {q:..., a:..., ...}]
+if "current_chat_log" not in st.session_state: 
+    st.session_state.current_chat_log = []
+
+# --- 사이드바: 기능 및 기록 ---
 with st.sidebar:
-    st.header("🗂️ 대화 기록 (History)")
-    
-    if st.button("➕ 새 대화 시작하기", use_container_width=True):
-        st.session_state.current_view = {k: "" for k in st.session_state.current_view}
+    st.divider()
+    # [새 대화 시작] 버튼: 현재 화면을 초기화하고 새 질문을 받을 준비
+    if st.button("➕ 새 대화 시작 (화면 초기화)", use_container_width=True):
+        # 현재 대화 내용이 있다면 파일로 저장하고 초기화
+        if st.session_state.current_chat_log:
+            save_session_history(current_user, st.session_state.current_chat_log)
+            st.toast("이전 대화가 기록에 저장되었습니다.")
+        
+        st.session_state.current_chat_log = [] # 리스트 비우기
         st.rerun()
 
-    st.divider()
-
-    # 저장된 기록 불러오기
-    history_data = load_history()
+    st.subheader("🗂️ 지난 대화 기록")
+    history_list = load_history_list(current_user)
+    for idx, item in enumerate(history_list):
+        if st.button(f"📄 {item['timestamp']} | {item['title']}", key=f"hist_{idx}"):
+            # 기록 불러오기 (현재 화면을 덮어씀)
+            st.session_state.current_chat_log = item['dialogue']
+            st.rerun()
     
-    if not history_data:
-        st.caption("아직 저장된 대화가 없습니다.")
-    else:
-        for idx, item in enumerate(history_data):
-            # 버튼 이름은 질문의 앞 15글자 + 시간
-            btn_label = f"{item['timestamp']} | {item['q'][:10]}..."
-            if st.button(btn_label, key=f"hist_{idx}", use_container_width=True):
-                # 선택한 기록을 메인 화면에 로드
-                st.session_state.current_view = item
-
     st.divider()
-    if st.button("🗑️ 모든 기록 삭제"):
-        delete_history()
+    if st.button("로그아웃"):
+        st.session_state.logged_in = False
         st.rerun()
 
-# --- 5. 메인 로직 (자동화 프로세스) ---
+# ==========================================
+# 🖥️ 메인 탭 화면 구성 (여기가 핵심!)
+# ==========================================
 
-# 채팅 입력창
-user_input = st.chat_input("질문을 입력하면 [답변 -> 분석 -> 결론]이 자동으로 진행됩니다.")
+# 탭을 미리 만들어둡니다.
+tab1, tab2, tab3 = st.tabs(["💬 1. 답변 (Opinions)", "⚔️ 2. 교차 분석 (Cross-Analysis)", "🏆 3. 최종 결론 (Conclusion)"])
+
+# 데이터가 하나라도 있을 때 렌더링 시작
+if st.session_state.current_chat_log:
+    
+    # [Tab 1] 질문과 각 AI의 답변을 순서대로 출력 (누적)
+    with tab1:
+        for i, log in enumerate(st.session_state.current_chat_log):
+            # 질문 표시 (작은 폰트, 굵게)
+            st.markdown(f"**🙋‍♂️ Q{i+1}. {log['q']}**") 
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                st.info(f"💎 다온")
+                st.write(log['g_resp'])
+            with c2:
+                st.success(f"🧠 루")
+                st.write(log['o_resp'])
+            st.divider() # 구분선
+
+    # [Tab 2] 교차 분석 내용 순서대로 출력 (누적)
+    with tab2:
+        for i, log in enumerate(st.session_state.current_chat_log):
+            st.markdown(f"**🙋‍♂️ Q{i+1}. {log['q']}** (에 대한 분석)")
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                st.info("💎 다온의 비평 (루를 분석)")
+                st.write(log['g_an'])
+            with c2:
+                st.success("🧠 루의 평가 (다온을 분석)")
+                st.write(log['o_an'])
+            st.divider()
+
+    # [Tab 3] 최종 결론 순서대로 출력 (누적)
+    with tab3:
+        for i, log in enumerate(st.session_state.current_chat_log):
+            st.markdown(f"**🙋‍♂️ Q{i+1}. {log['q']}** (최종 결론)")
+            st.markdown(log['final_con'])
+            st.divider()
+
+# ==========================================
+# ⌨️ 채팅 입력 및 처리 (하단 고정)
+# ==========================================
+user_input = st.chat_input(f"질문을 입력하세요. (엔터 치면 1,2,3단계 자동 실행 | 잔여: {current_credits}회)")
 
 if user_input:
-    # 1. 상태창 열기 (진행상황 중계)
-    with st.status("🚀 AI 프로세스 가동 중...", expanded=True) as status:
+    if current_credits > 0:
+        # 크레딧 차감
+        deduct_credit(current_user)
         
-        # 데이터 임시 저장소
-        current_data = {
-            "q": user_input,
-            "timestamp": datetime.now().strftime("%m/%d %H:%M"),
-            "model_name": valid_model_name
-        }
-
-        # --- STEP 1: 답변 생성 ---
-        st.write("1️⃣ 1단계: 다온과 루가 답변을 작성하고 있습니다...")
-        
-        # 다온 (Gemini)
-        try:
-            model = genai.GenerativeModel(valid_model_name.replace('models/', '')) 
-            g_res = model.generate_content(user_input)
-            current_data["g_resp"] = g_res.text
-        except Exception as e:
-            current_data["g_resp"] = f"에러: {e}"
-
-        # 루 (GPT)
-        try:
-            o_res = gpt_client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": "너는 냉철하고 논리적인 전문가 '루'다."},
-                    {"role": "user", "content": user_input}
-                ]
-            )
-            current_data["o_resp"] = o_res.choices[0].message.content
-        except Exception as e:
-            current_data["o_resp"] = f"에러: {e}"
+        # 상태창 표시
+        with st.status("🚀 3단계 심층 분석 프로세스 가동 중...", expanded=True) as status:
+            new_turn = {"q": user_input, "timestamp": datetime.now().strftime("%H:%M")}
             
-        # --- STEP 2: 교차 분석 ---
-        st.write("2️⃣ 2단계: 서로의 답변을 비판적으로 분석 중입니다...")
-        
-        # 다온 -> 루 분석
-        try:
-            prompt = f"다음은 '루(GPT)'의 답변이다. 논리적 허점이나 보완할 점을 비판해줘:\n{current_data['o_resp']}"
-            g_an = model.generate_content(prompt)
-            current_data["g_an"] = g_an.text
-        except: current_data["g_an"] = "분석 실패"
-
-        # 루 -> 다온 분석
-        try:
-            prompt = f"다음은 '다온(Gemini)'의 답변이다. 창의성과 감성, 논리성을 평가해줘:\n{current_data['g_resp']}"
-            o_an = gpt_client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role":"user","content":prompt}]
-            )
-            current_data["o_an"] = o_an.choices[0].message.content
-        except: current_data["o_an"] = "분석 실패"
-
-        # --- STEP 3: 최종 결론 ---
-        st.write("3️⃣ 3단계: 루(GPT)가 의사봉을 잡고 최종 결론을 내립니다...")
-        
-        try:
-            final_prompt = f"""
-            너는 최종 의사결정권자다. 아래 내용을 종합하여 사용자에게 명쾌한 결론을 내려라.
+            # --- STEP 1: 답변 ---
+            st.write("1️⃣ 다온과 루가 생각 중입니다...")
+            try:
+                model = genai.GenerativeModel(valid_model_name)
+                new_turn["g_resp"] = model.generate_content(user_input).text
+            except: new_turn["g_resp"] = "Gemini 연결 실패"
             
-            [질문] {current_data['q']}
-            [다온 답변] {current_data['g_resp']}
-            [루 답변] {current_data['o_resp']}
-            [다온 비평] {current_data['g_an']}
-            [루 비평] {current_data['o_an']}
+            try:
+                res = gpt_client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":user_input}])
+                new_turn["o_resp"] = res.choices[0].message.content
+            except: new_turn["o_resp"] = "GPT 연결 실패"
+
+            # --- STEP 2: 교차 분석 ---
+            st.write("2️⃣ 서로의 답변을 검증하고 있습니다...")
+            try:
+                new_turn["g_an"] = model.generate_content(f"다음은 '루(GPT)'의 답변이다. 논리적 허점을 비판해줘:\n{new_turn['o_resp']}").text
+            except: new_turn["g_an"] = "분석 실패"
             
-            작성 가이드:
-            1. 핵심 쟁점 요약
-            2. 양측 의견의 장단점 비교
-            3. 최종 조언 (구체적으로)
-            """
-            final_res = gpt_client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": final_prompt}]
-            )
-            current_data["final_con"] = final_res.choices[0].message.content
-        except: current_data["final_con"] = "결론 도출 실패"
+            try:
+                res = gpt_client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":f"다음은 '다온(Gemini)'의 답변이다. 창의성과 논리성을 평가해줘:\n{new_turn['g_resp']}"}])
+                new_turn["o_an"] = res.choices[0].message.content
+            except: new_turn["o_an"] = "분석 실패"
+            
+            # --- STEP 3: 최종 결론 ---
+            st.write("3️⃣ 루(GPT)가 최종 결론을 내립니다...")
+            try:
+                final_prompt = f"""
+                질문: {user_input}
+                [다온 답변] {new_turn['g_resp']}
+                [루 답변] {new_turn['o_resp']}
+                [다온 비평] {new_turn['g_an']}
+                [루 비평] {new_turn['o_an']}
+                
+                위 내용을 종합하여 명쾌한 최종 결론을 내려라. 
+                이전 대화 맥락이 있다면 그것도 고려해라.
+                """
+                res = gpt_client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":final_prompt}])
+                new_turn["final_con"] = res.choices[0].message.content
+            except: new_turn["final_con"] = "결론 도출 실패"
 
-        # --- 저장 및 종료 ---
-        save_history(current_data) # 파일에 저장
-        st.session_state.current_view = current_data # 화면에 표시
-        
-        status.update(label="✅ 모든 분석이 완료되었습니다!", state="complete", expanded=False)
-
-# --- 6. 화면 출력 (탭 구성) ---
-
-# 데이터가 있을 때만 화면 표시
-if st.session_state.current_view["q"]:
-    st.subheader(f"🗣️ 질문: {st.session_state.current_view['q']}")
-    
-    tab1, tab2, tab3 = st.tabs(["💬 1. 의견 제시", "⚔️ 2. 교차 검증", "🏆 3. 최종 결론"])
-
-    with tab1:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.info(f"💎 다온 ({st.session_state.current_view['model_name']})")
-            st.write(st.session_state.current_view["g_resp"])
-        with c2:
-            st.success("🧠 루 (GPT-4o)")
-            st.write(st.session_state.current_view["o_resp"])
-
-    with tab2:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.info("💎 다온의 비평")
-            st.write(st.session_state.current_view["g_an"])
-        with c2:
-            st.success("🧠 루의 평가")
-            st.write(st.session_state.current_view["o_an"])
-
-    with tab3:
-        st.markdown("### 📝 종합 결론 보고서")
-        st.markdown(st.session_state.current_view["final_con"])
-else:
-    # 초기 화면 안내
-    st.info("👋 사용자님 반갑습니다. 하단 입력창에 질문을 입력하세요. (자동 분석 & 기록 저장)")
+            # 결과 리스트에 추가 (누적)
+            st.session_state.current_chat_log.append(new_turn)
+            
+            status.update(label="✅ 분석 완료!", state="complete", expanded=False)
+            st.rerun()
+            
+    else:
+        st.error("이용권이 부족합니다. 관리자에게 문의하세요.")
