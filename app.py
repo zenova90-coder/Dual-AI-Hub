@@ -50,10 +50,10 @@ except:
 if "current_chat_log" not in st.session_state: 
     st.session_state.current_chat_log = []
 
-# --- 4. 모델 설정 (여기가 핵심 변경!) ---
+# --- 4. 모델 설정 (안정적인 버전으로 고정) ---
 def get_gemini_model():
-    # 'gemini-1.5-flash'가 현재 가장 연결이 잘 되고 빠릅니다.
-    return 'gemini-1.5-flash'
+    # 404 에러를 피하기 위해 가장 안정적인 'gemini-pro'를 사용합니다.
+    return 'gemini-pro'
 
 valid_model_name = get_gemini_model()
 
@@ -91,8 +91,9 @@ if st.session_state.current_chat_log:
         for i, turn in enumerate(st.session_state.current_chat_log):
             st.markdown(f"**Q{i+1}. {turn['q']}**") 
             c1, c2 = st.columns(2)
-            c1.info(f"💎 다온 ({valid_model_name})"); c1.write(turn.get('g_resp', ''))
-            c2.success(f"🧠 루"); c2.write(turn.get('o_resp', ''))
+            # [요청 반영] 이름표 수정
+            c1.info("💎 다온 (Gemini)"); c1.write(turn.get('g_resp', ''))
+            c2.success("🧠 루 (Chat GPT)"); c2.write(turn.get('o_resp', ''))
             st.divider()
     with tab2:
         for i, turn in enumerate(st.session_state.current_chat_log):
@@ -113,13 +114,12 @@ else:
 user_input = st.chat_input("질문을 입력하세요.")
 
 if user_input:
-    with st.status("🚀 다온(Flash)과 루(GPT)가 분석 중...", expanded=True) as status:
+    with st.status("🚀 다온과 루가 분석 중...", expanded=True) as status:
         new_turn = {"q": user_input, "timestamp": datetime.now().strftime("%H:%M")}
 
         # STEP 1: 답변
         st.write("1️⃣ 답변 작성 중...")
         try:
-            # 모델 이름에서 'models/' 제거하고 호출
             model = genai.GenerativeModel(valid_model_name)
             new_turn["g_resp"] = model.generate_content(user_input).text
         except Exception as e: new_turn["g_resp"] = f"Gemini 오류: {e}"
@@ -129,10 +129,9 @@ if user_input:
             new_turn["o_resp"] = o_res.choices[0].message.content
         except Exception as e: new_turn["o_resp"] = f"GPT 오류: {e}"
 
-        # STEP 2: 분석 (안전 설정 해제 적용)
+        # STEP 2: 분석 (안전 설정 해제 유지)
         st.write("2️⃣ 교차 분석 중...")
         
-        # 안전 설정: 비판을 허용하도록 설정
         safety_settings = [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -161,5 +160,5 @@ if user_input:
         except: new_turn["final_con"] = "결론 실패"
 
         st.session_state.current_chat_log.append(new_turn)
-        status.update(label="완료!", state="complete", expanded=False)
+        status.update(label="✅ 완료!", state="complete", expanded=False)
         st.rerun()
