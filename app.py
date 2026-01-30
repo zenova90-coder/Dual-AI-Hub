@@ -116,32 +116,44 @@ if user_input:
             )
             turn_data["o_resp"] = o_res.choices[0].message.content
 
-            # 2. 분석
+            # 2. 분석 (유동적 기준으로 변경됨)
             st.write("2️⃣ 교차 비판 및 검증 중...")
-            turn_data["g_an"] = model.generate_content(f"다음은 Chat GPT의 답변입니다. 논리적 허점이나 사실 관계 오류를 날카롭게 비판해주세요:\n{turn_data['o_resp']}").text
             
+            # 다온(Gemini)의 분석 프롬프트 수정
+            g_prompt = f"""
+            너는 날카로운 비평가다. 다음은 Chat GPT의 답변이다.
+            사용자의 질문 의도에 맞춰 가장 중요한 평가 기준을 스스로 정하고 비판하라.
+            (예: 코드라면 효율성, 글쓰기라면 독창성 등)
+            형식에 얽매이지 말고 핵심적인 허점이나 누락된 관점을 지적하라.
+            
+            [Chat GPT 답변]: {turn_data['o_resp']}
+            """
+            turn_data["g_an"] = model.generate_content(g_prompt).text
+            
+            # 루(GPT)의 분석 프롬프트 수정
+            o_prompt = f"""
+            너는 냉철한 심사위원이다. 다음은 Gemini의 답변이다.
+            이 답변이 사용자의 질문을 얼마나 완벽하게 해결했는지 '상황에 맞는 기준'으로 평가하라.
+            고정된 목차(창의성/논리 등)를 쓰지 말고, 답변의 특성에 따라 자유롭게 강점과 약점을 분석하라.
+            
+            [Gemini 답변]: {turn_data['g_resp']}
+            """
             o_an = gpt_client.chat.completions.create(
-                model="gpt-4o", messages=[{"role": "user", "content": f"다음은 Gemini의 답변입니다. 창의성, 논리, 실현 가능성을 평가하고 부족한 점을 지적해주세요:\n{turn_data['g_resp']}"}]
+                model="gpt-4o", messages=[{"role": "user", "content": o_prompt}]
             )
             turn_data["o_an"] = o_an.choices[0].message.content
 
-            # 3. 결론 (강화된 프롬프트)
+            # 3. 결론
             st.write("3️⃣ 최종 결론 도출 중...")
             final_prompt = f"""
-            너는 이 토론의 '최종 의사결정권자'다. 아래의 자료를 바탕으로 가장 완벽한 해답을 작성하라.
-
-            [사용자 질문]: {user_input}
+            너는 '최종 의사결정권자'다. 
+            단순 요약이 아니라, 상호 비판(Review) 내용을 적극 수용하여 '업그레이드된 최종 답변'을 작성하라.
             
-            [AI 1: Gemini 의견]: {turn_data['g_resp']}
-            [AI 2: GPT 의견]: {turn_data['o_resp']}
-            
-            [Gemini의 비평 (GPT 지적)]: {turn_data['g_an']}
-            [GPT의 비평 (Gemini 지적)]: {turn_data['o_an']}
-            
-            [작성 지침]
-            1. 단순히 두 의견을 요약하지 말 것.
-            2. **'비평' 탭에서 지적된 오류나 문제점은 반드시 최종 답변에 '수정 및 반영'할 것.** (예: Gemini가 GPT의 논리 오류를 지적했다면, 그 부분을 고쳐서 답변할 것)
-            3. 두 AI의 장점만을 결합하여, 사용자가 실행할 수 있는 가장 구체적이고 올바른 결론을 제시할 것.
+            [질문]: {user_input}
+            [Gemini 의견]: {turn_data['g_resp']}
+            [GPT 의견]: {turn_data['o_resp']}
+            [Gemini 비평]: {turn_data['g_an']}
+            [GPT 비평]: {turn_data['o_an']}
             """
             
             final_res = gpt_client.chat.completions.create(
