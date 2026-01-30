@@ -5,11 +5,11 @@ from datetime import datetime
 import json
 import os
 import concurrent.futures
-import PyPDF2  # PDF 처리를 위한 라이브러리
+import PyPDF2
 from io import StringIO
 
 # --- 1. 페이지 설정 ---
-st.set_page_config(page_title="Dual-AI Hub (Pro)", layout="wide")
+st.set_page_config(page_title="Dual-AI Hub (Fixed)", layout="wide")
 st.title("⚡ Dual-AI Insight Hub")
 
 # --- 2. API 키 설정 ---
@@ -17,7 +17,7 @@ try:
     gemini_api_key = st.secrets["GEMINI_API_KEY"]
     gpt_api_key = st.secrets["GPT_API_KEY"]
 except KeyError:
-    st.error("🚨 API 키 설정이 필요합니다.")
+    st.error("🚨 API 키 설정이 필요합니다. (.streamlit/secrets.toml 확인)")
     st.stop()
 
 genai.configure(api_key=gemini_api_key)
@@ -37,7 +37,7 @@ def get_best_available_model():
 GEMINI_MODEL = get_best_available_model()
 GPT_MODEL = "gpt-4o-mini"
 
-# --- 4. 데이터 관리 ---
+# --- 4. 데이터 관리 (파일 저장) ---
 DB_FILE = "chat_db.json"
 
 def load_data():
@@ -53,41 +53,46 @@ def save_data(sessions):
         json.dump(sessions, f, ensure_ascii=False, indent=4)
 
 # --- 5. [핵심] 파일 읽기 함수 ---
-def read_uploaded_file(uploaded_file):
-    """업로드된 파일을 텍스트로 변환하는 함수"""
+def process_uploaded_file(uploaded_file):
+    """파일을 읽어서 텍스트를 반환합니다."""
     try:
-        # 1. PDF 파일
+        text = ""
         if uploaded_file.type == "application/pdf":
             pdf_reader = PyPDF2.PdfReader(uploaded_file)
-            text = ""
             for page in pdf_reader.pages:
-                text += page.extract_text() + "\n"
-            return text
-        
-        # 2. 텍스트 기반 파일 (txt, csv, py, md 등)
-        else:
+                extracted = page.extract_text()
+                if extracted: text += extracted + "\n"
+        else: # 텍스트 파일 등
             stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
-            return stringio.read()
+            text = stringio.read()
+            
+        if not text.strip():
+            return None, "⚠️ 파일은 읽었으나 내용이 비어있습니다. (이미지 PDF일 가능성)"
+        return text, f"✅ 파일 로드 성공! ({len(text)}자)"
     except Exception as e:
-        return f"파일 읽기 실패: {str(e)}"
+        return None, f"❌ 파일 읽기 오류: {e}"
 
-# --- 6. 세션 상태 관리 ---
+# --- 6. 세션 상태 초기화 ---
 if "sessions" not in st.session_state:
     st.session_state.sessions = load_data()
     st.session_state.active_index = 0
 
 if "system_role" not in st.session_state:
-    st.session_state.system_role = "너는 각 분야의 최고 전문가다. 사용자에게 친절하고 명확하게 설명하라."
+    st.session_state.system_role = "너는 분석 전문가다."
 
 if "active_index" not in st.session_state:
     st.session_state.active_index = 0
+
+# [중요] 파일 내용을 기억하기 위한 변수
+if "file_cache" not in st.session_state:
+    st.session_state.file_cache = {"name": None, "content": None}
 
 def get_active_session():
     if st.session_state.active_index >= len(st.session_state.sessions):
         st.session_state.active_index = 0
     return st.session_state.sessions[st.session_state.active_index]
 
-# --- 7. 병렬 처리 함수 ---
+# --- 7. API 호출 함수 ---
 def call_gemini(prompt):
     model = genai.GenerativeModel(GEMINI_MODEL)
     return model.generate_content(prompt).text
@@ -96,65 +101,73 @@ def call_gpt(messages):
     response = gpt_client.chat.completions.create(model=GPT_MODEL, messages=messages)
     return response.choices[0].message.content
 
-# --- 8. 사이드바 ---
+# --- 8. 사이드바 (UI) ---
 with st.sidebar:
     st.header("🎮 제어 센터")
     
-    with st.expander("🎭 AI 역할(Persona) 설정"):
-        input_role = st.text_area("역할 입력", value=st.session_state.system_role, height=70)
-        if st.button("💾 역할 적용", use_container_width=True):
-            st.session_state.system_role = input_role
-            st.success("적용 완료!")
-
-    st.divider()
-
-    # [NEW] 파일 업로드 기능 추가
+    # [1] 파일 업로드 (세션 스테이트 사용)
     st.subheader("📂 자료 업로드")
-    uploaded_file = st.file_uploader("분석할 파일을 올려주세요", type=["pdf", "txt", "csv", "py", "md"])
-    file_content = ""
+    uploaded_file = st.file_uploader("파일 선택", type=["pdf", "txt", "csv", "py", "md"])
     
-    if uploaded_file is not None:
-        with st.spinner("파일 읽는 중..."):
-            file_content = read_uploaded_file(uploaded_file)
-        st.success(f"✅ {uploaded_file.name} 로드 완료! ({len(file_content)}자)")
-        with st.expander("파일 내용 미리보기"):
-            st.text(file_content[:500] + "...") # 앞부분만 살짝 보여줌
+    # 파일이 새로 올라오면 처리
+    if uploaded_file:
+        # 이미 처리한 파일과 다른 파일이라면 새로 읽기
+        if st.session_state.file_cache["name"] != uploaded_file.name:
+            with st.spinner("파일 읽는 중..."):
+                content, msg = process_uploaded_file(uploaded_file)
+                if content:
+                    st.session_state.file_cache = {"name": uploaded_file.name, "content": content}
+                    st.success(msg)
+                else:
+                    st.error(msg)
+        else:
+            st.success(f"💾 메모리에 로드됨: {uploaded_file.name}")
+    else:
+        # 파일이 제거되면 캐시도 초기화
+        st.session_state.file_cache = {"name": None, "content": None}
 
     st.divider()
 
-    # 대화방 관리
-    st.subheader("🗂️ 대화방 관리")
+    # [2] 페르소나
+    with st.expander("🎭 AI 역할 설정"):
+        input_role = st.text_area("역할", value=st.session_state.system_role)
+        if st.button("💾 적용"):
+            st.session_state.system_role = input_role
+            st.success("완료!")
+
+    st.divider()
+
+    # [3] 대화방 관리
+    st.subheader("🗂️ 대화방")
     active_session = get_active_session()
     
-    new_title = st.text_input("🏷️ 방 이름 수정", value=active_session["title"], key=f"title_{st.session_state.active_index}")
+    new_title = st.text_input("🏷️ 방 이름", value=active_session["title"], key=f"t_{st.session_state.active_index}")
     if new_title != active_session["title"]:
         active_session["title"] = new_title
         save_data(st.session_state.sessions)
         st.rerun()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("➕ 새 대화", use_container_width=True):
-            new_session = {"title": "새 대화", "history": []}
-            st.session_state.sessions.insert(0, new_session)
+    c1, c2 = st.columns(2)
+    with c1: 
+        if st.button("➕ 새 대화"):
+            st.session_state.sessions.insert(0, {"title": "새 대화", "history": []})
             st.session_state.active_index = 0
             save_data(st.session_state.sessions)
             st.rerun()
-    with col2:
-        if st.button("🗑️ 전체 삭제", use_container_width=True):
-            if os.path.exists(DB_FILE): os.remove(DB_FILE)
+    with c2:
+        if st.button("🗑️ 삭제"):
             st.session_state.sessions = [{"title": "새 대화", "history": []}]
             st.session_state.active_index = 0
+            if os.path.exists(DB_FILE): os.remove(DB_FILE)
             st.rerun()
 
     st.markdown("---")
     for i, session in enumerate(st.session_state.sessions):
-        label = session["title"]
-        if len(label) > 15: label = label[:15] + "..."
+        label = session["title"][:15] + "..." if len(session["title"]) > 15 else session["title"]
         if i == st.session_state.active_index:
-            st.button(f"📂 {label}", key=f"s_{i}", use_container_width=True, disabled=True)
+            st.button(f"📂 {label}", key=f"s{i}", disabled=True)
         else:
-            if st.button(f"📄 {label}", key=f"s_{i}", use_container_width=True):
+            if st.button(f"📄 {label}", key=f"s{i}"):
                 st.session_state.active_index = i
                 st.rerun()
 
@@ -163,91 +176,95 @@ active_session = get_active_session()
 chat_history = active_session["history"]
 current_role = st.session_state.system_role
 
-# 안내 문구 (파일이 올라가 있으면 표시)
-if uploaded_file:
-    st.info(f"📎 **{uploaded_file.name}** 파일을 참조하여 분석합니다.")
+# 파일 내용 가져오기 (세션에서 안전하게)
+current_file_content = st.session_state.file_cache["content"]
+
+# [분석 버튼]
+trigger_analysis = False
+auto_prompt = ""
+
+if current_file_content:
+    st.info(f"📎 **{st.session_state.file_cache['name']}** 참조 중입니다. 질문하세요.")
+    if st.button("📑 파일 요약/분석 실행", use_container_width=True):
+        trigger_analysis = True
+        auto_prompt = "이 파일의 핵심 내용을 요약하고 분석해줘."
 
 user_input = st.chat_input("질문을 입력하세요...")
 
-if user_input:
+# 실행 조건
+if user_input or trigger_analysis:
+    final_question = user_input if user_input else auto_prompt
+
     if len(chat_history) == 0 and active_session["title"] == "새 대화":
-        active_session["title"] = user_input
+        active_session["title"] = final_question[:20]
         save_data(st.session_state.sessions)
         st.rerun()
 
-    with st.status("⚡ 파일 분석 및 병렬 처리 중...", expanded=True) as status:
-        turn_data = {"q": user_input, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")}
-        
-        # [핵심] 파일 내용이 있으면 프롬프트에 합치기
-        final_user_content = user_input
-        if file_content:
-            final_user_content = f"""
-            [참고 자료 시작]
-            {file_content}
-            [참고 자료 끝]
+    with st.status("⚡ 분석 중... (잠시만 기다려주세요)", expanded=True) as status:
+        try:
+            turn_data = {"q": final_question, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")}
             
-            [사용자 질문]: {user_input}
-            """
+            # 프롬프트 구성 (파일 내용 안전하게 삽입)
+            context_input = final_question
+            if current_file_content:
+                # 3만자로 제한 (토큰 에러 방지)
+                safe_content = current_file_content[:30000] 
+                context_input = f"""
+                [참고 자료]:
+                {safe_content}
+                ...(내용 일부 생략됨)...
+                
+                [질문]: {final_question}
+                """
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            # STEP 1: 동시 답변
-            st.write(f"1️⃣ 자료 분석 및 답변 생성 (Role: {current_role[:10]}...)")
-            
-            # Gemini Prompt
-            g_msg = f"System Instruction: {current_role}\n\n{final_user_content}"
-            # GPT Messages
-            o_msg = [{"role": "system", "content": current_role}, {"role": "user", "content": final_user_content}]
-            
-            f_g = executor.submit(call_gemini, g_msg)
-            f_o = executor.submit(call_gpt, o_msg)
-            
-            turn_data["g_resp"] = f_g.result()
-            turn_data["o_resp"] = f_o.result()
+            # 병렬 처리 실행
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                # 1. 답변
+                st.write("1️⃣ 답변 생성 중...")
+                f_g = executor.submit(call_gemini, f"System: {current_role}\n{context_input}")
+                f_o = executor.submit(call_gpt, [{"role": "system", "content": current_role}, {"role": "user", "content": context_input}])
+                
+                turn_data["g_resp"] = f_g.result()
+                turn_data["o_resp"] = f_o.result()
 
-            # STEP 2: 동시 분석
-            st.write("2️⃣ 상호 비평 중...")
-            
-            # 비평할 때는 파일 내용을 굳이 다시 줄 필요 없음 (답변만 보면 되니까)
-            # 하지만 정확성을 위해 원본 질문 맥락은 유지
-            
-            g_an_prompt = f"[Role]: {current_role}\n[Task]: Critically evaluate GPT's answer based on the user's question and context.\n\n[User Question]: {user_input}\n[GPT Answer]: {turn_data['o_resp']}"
-            
-            o_an_msg = [{"role": "system", "content": current_role}, {"role": "user", "content": f"Evaluate Gemini's answer based on the user's question.\n\n[User Question]: {user_input}\n[Gemini Answer]: {turn_data['g_resp']}"}]
-            
-            f_g_an = executor.submit(call_gemini, g_an_prompt)
-            f_o_an = executor.submit(call_gpt, o_an_msg)
-            
-            turn_data["g_an"] = f_g_an.result()
-            turn_data["o_an"] = f_o_an.result()
+                # 2. 비평
+                st.write("2️⃣ 교차 검증 중...")
+                f_g_an = executor.submit(call_gemini, f"Role: {current_role}\nEvaluate GPT's answer naturally.\n\nGPT Answer: {turn_data['o_resp']}")
+                f_o_an = executor.submit(call_gpt, [{"role": "system", "content": current_role}, {"role": "user", "content": f"Evaluate Gemini's answer naturally.\n\nGemini Answer: {turn_data['g_resp']}"}])
+                
+                turn_data["g_an"] = f_g_an.result()
+                turn_data["o_an"] = f_o_an.result()
 
-            # STEP 3: 결론
-            st.write("3️⃣ 최종 결론 도출...")
-            final_prompt = f"""
-            Role: {current_role}
-            Task: Synthesize a final solution based on the discussion.
-            Requirement: Fix errors pointed out in the reviews.
-            
-            Q: {user_input}
-            Gemini: {turn_data['g_resp']}
-            GPT: {turn_data['o_resp']}
-            Review(G): {turn_data['g_an']}
-            Review(O): {turn_data['o_an']}
-            """
-            turn_data["final_con"] = call_gpt([{"role": "user", "content": final_prompt}])
+                # 3. 결론
+                st.write("3️⃣ 결론 도출...")
+                final_p = f"""
+                Role: {current_role}
+                Synthesize final conclusion. Fix errors found in review.
+                
+                Q: {final_question}
+                Gemini: {turn_data['g_resp']}
+                GPT: {turn_data['o_resp']}
+                Review(G): {turn_data['g_an']}
+                Review(O): {turn_data['o_an']}
+                """
+                turn_data["final_con"] = call_gpt([{"role": "user", "content": final_p}])
 
-            active_session["history"].append(turn_data)
-            save_data(st.session_state.sessions)
-            status.update(label="✅ 분석 완료!", state="complete", expanded=False)
-            st.rerun()
+                active_session["history"].append(turn_data)
+                save_data(st.session_state.sessions)
+                
+                status.update(label="✅ 완료!", state="complete", expanded=False)
+                st.rerun()
+
+        except Exception as e:
+            st.error(f"❌ 처리 중 오류 발생: {e}")
+            # 에러가 나면 여기서 멈추고 빨간 박스를 보여줌
 
 # --- 10. 결과 출력 ---
 if chat_history:
-    st.caption(f"🕒 {len(chat_history)}개의 기록 | 현재 대화방: {active_session['title']}")
-    
+    st.caption(f"🕒 기록: {len(chat_history)}건")
     for i, chat in enumerate(reversed(chat_history)):
         idx = len(chat_history) - i
         st.markdown(f"### Q{idx}. {chat['q']}")
-        
         t1, t2, t3 = st.tabs(["💬 답변", "⚔️ 비평", "🏆 결론"])
         with t1:
             c1, c2 = st.columns(2)
