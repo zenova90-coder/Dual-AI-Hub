@@ -21,33 +21,27 @@ except KeyError:
 genai.configure(api_key=gemini_api_key)
 gpt_client = OpenAI(api_key=gpt_api_key)
 
-# --- 3. [수정됨] 사용 가능한 모델 자동 탐색 (404 에러 방지) ---
+# --- 3. 모델 자동 탐색 (기능 유지) ---
 def get_best_available_model():
     """
-    API에 직접 물어봐서 현재 사용 가능한 모델 중 가장 좋은 것을 가져옵니다.
+    내 API 키로 사용 가능한 최적의 모델을 자동으로 찾습니다.
     """
     try:
-        # 모델 목록 조회
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # 우선순위: 1.5 Flash -> 1.5 Pro -> 1.0 Pro
-        # models/ 접두사가 있든 없든 유연하게 찾음
         priority_keywords = ['1.5-flash', '1.5-pro', 'gemini-pro']
         
         for keyword in priority_keywords:
             for m in models:
                 if keyword in m:
-                    return m # 찾은 모델 이름 그대로 반환 (가장 확실함)
-        
+                    return m
         return models[0] if models else "models/gemini-pro"
     except:
-        # 목록 조회 실패 시 기본값 시도
         return "models/gemini-pro"
 
-# 시스템이 찾은 확실한 모델명
+# 시스템 내부적으로만 모델을 확정하고, 화면엔 표시하지 않습니다.
 TARGET_MODEL = get_best_available_model()
 
-# --- 4. 데이터 관리 (파일 저장/로드) ---
+# --- 4. 데이터 관리 (파일 저장) ---
 DB_FILE = "chat_db.json"
 
 def load_data():
@@ -63,7 +57,7 @@ def save_data(sessions):
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(sessions, f, ensure_ascii=False, indent=4)
 
-# --- 5. 세션 초기화 ---
+# --- 5. 세션 상태 관리 ---
 if "sessions" not in st.session_state:
     st.session_state.sessions = load_data()
     st.session_state.active_index = 0
@@ -72,12 +66,11 @@ if "active_index" not in st.session_state:
     st.session_state.active_index = 0
 
 def get_active_session():
-    # 인덱스 범위 오류 방지
     if st.session_state.active_index >= len(st.session_state.sessions):
         st.session_state.active_index = 0
     return st.session_state.sessions[st.session_state.active_index]
 
-# --- 6. 사이드바 ---
+# --- 6. 사이드바 (문구 삭제 완료) ---
 with st.sidebar:
     st.header("🗂️ 대화 기록")
     
@@ -99,6 +92,7 @@ with st.sidebar:
 
     st.divider()
 
+    # 대화 목록 표시
     for i, session in enumerate(st.session_state.sessions):
         label = session["title"]
         if len(label) > 12: label = label[:12] + "..."
@@ -109,9 +103,8 @@ with st.sidebar:
             if st.button(f"📄 {label}", key=f"s_{i}", use_container_width=True):
                 st.session_state.active_index = i
                 st.rerun()
-
-    # (디버깅용) 현재 연결된 모델이 무엇인지 작게 표시 (필요 없으면 삭제 가능)
-    st.caption(f"Connected: {TARGET_MODEL}")
+    
+    # (여기 있던 Connected 문구를 삭제했습니다)
 
 # --- 7. 메인 로직 ---
 active_session = get_active_session()
@@ -120,7 +113,7 @@ chat_history = active_session["history"]
 user_input = st.chat_input("질문을 입력하세요...")
 
 if user_input:
-    # 제목 자동 설정
+    # 첫 질문 제목 자동 저장
     if len(chat_history) == 0:
         active_session["title"] = user_input
         save_data(st.session_state.sessions)
@@ -131,8 +124,6 @@ if user_input:
         try:
             # 1. 답변
             st.write("1️⃣ 다온 & 루 답변 작성 중...")
-            
-            # [수정됨] 자동 탐색된 모델명 사용
             model = genai.GenerativeModel(TARGET_MODEL)
             turn_data["g_resp"] = model.generate_content(user_input).text
             
@@ -165,7 +156,7 @@ if user_input:
             )
             turn_data["final_con"] = final_res.choices[0].message.content
 
-            # 저장 및 완료 처리
+            # 저장 및 완료
             active_session["history"].append(turn_data)
             save_data(st.session_state.sessions)
             
@@ -175,7 +166,6 @@ if user_input:
 
         except Exception as e:
             st.error(f"❌ 에러 발생: {e}")
-            # 에러 발생 시 진행 멈춤
 
 # --- 8. 화면 출력 (최신순) ---
 if chat_history:
@@ -183,7 +173,7 @@ if chat_history:
     
     total_count = len(chat_history)
     
-    # 최신 질문이 맨 위에 오도록 역순 반복
+    # 최신 글이 맨 위로 (Reverse)
     for i, chat in enumerate(reversed(chat_history)):
         idx = total_count - i
         
