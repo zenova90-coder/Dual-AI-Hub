@@ -4,13 +4,13 @@ from openai import OpenAI
 from datetime import datetime
 import json
 import os
-import concurrent.futures # 병렬 처리를 위한 핵심 라이브러리
+import concurrent.futures 
 
 # --- 1. 페이지 설정 (가장 먼저 실행) ---
 st.set_page_config(page_title="Dual-AI Hub (Private)", layout="wide")
 
 # ==========================================
-# 🔒 [보안] 비밀번호 잠금 장치
+# 🔒 [보안] 비밀번호 잠금 장치 (엔터 키 적용)
 # ==========================================
 def check_password():
     """비밀번호가 맞는지 확인하는 함수"""
@@ -20,17 +20,20 @@ def check_password():
     st.header("🔒 접속 권한 확인")
     st.write("관리자가 설정한 비밀번호를 입력하세요.")
     
-    password_input = st.text_input("비밀번호", type="password")
-    
-    if st.button("로그인"):
-        try:
-            if password_input == st.secrets["APP_PASSWORD"]:
-                st.session_state["password_correct"] = True
-                st.rerun()
-            else:
-                st.error("❌ 비밀번호가 틀렸습니다.")
-        except KeyError:
-            st.error("🚨 secrets.toml에 APP_PASSWORD 설정이 없습니다.")
+    # [수정됨] Form을 사용하여 엔터 키 입력 시 자동 제출(Submit) 구현
+    with st.form(key='login_form'):
+        password_input = st.text_input("비밀번호", type="password")
+        submit_button = st.form_submit_button("로그인") # 엔터 치면 이 버튼이 눌림
+        
+        if submit_button:
+            try:
+                if password_input == st.secrets["APP_PASSWORD"]:
+                    st.session_state["password_correct"] = True
+                    st.rerun()
+                else:
+                    st.error("❌ 비밀번호가 틀렸습니다.")
+            except KeyError:
+                st.error("🚨 secrets.toml에 APP_PASSWORD 설정이 없습니다.")
     
     return False
 
