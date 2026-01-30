@@ -1,12 +1,12 @@
 import streamlit as st
-from google import genai
+import google.generativeai as genai  # 엔진 교체 완료
 from openai import OpenAI
 
 # 페이지 설정
 st.set_page_config(page_title="Dual-AI Hub", layout="wide")
 st.title("🤖 Dual-AI Insight Hub")
 
-# 사이드바에서 키 입력 받기
+# 사이드바 API 설정
 with st.sidebar:
     st.header("🔑 API 설정")
     gemini_key = st.text_input("Gemini API Key", type="password")
@@ -28,17 +28,20 @@ with tab1:
             st.error("사이드바에 API 키를 입력해주세요!")
         else:
             with st.spinner("생각 중..."):
+                # 1. Gemini 호출 (안정화 버전)
                 try:
-                    # Gemini
-                    g_client = genai.Client(api_key=gemini_key)
-                    st.session_state.g_resp = g_client.models.generate_content(model="gemini-2.0-flash", contents=user_input).text
+                    genai.configure(api_key=gemini_key)
+                    model = genai.GenerativeModel('gemini-pro') # 가장 안정적인 모델 사용
+                    response = model.generate_content(user_input)
+                    st.session_state.g_resp = response.text
                 except Exception as e:
                     st.error(f"Gemini 에러: {e}")
                 
+                # 2. GPT 호출
                 try:
-                    # GPT
                     o_client = OpenAI(api_key=gpt_key)
-                    st.session_state.o_resp = o_client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":user_input}]).choices[0].message.content
+                    res = o_client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":user_input}])
+                    st.session_state.o_resp = res.choices[0].message.content
                 except Exception as e:
                     st.error(f"GPT 에러: {e}")
 
@@ -56,11 +59,19 @@ with tab2:
         if st.session_state.g_resp and st.session_state.o_resp:
             with st.spinner("분석 중..."):
                 # Gemini가 분석
-                g_client = genai.Client(api_key=gemini_key)
-                st.session_state.g_an = g_client.models.generate_content(model="gemini-2.0-flash", contents=f"평가해줘: {st.session_state.o_resp}").text
+                try:
+                    genai.configure(api_key=gemini_key)
+                    model = genai.GenerativeModel('gemini-pro')
+                    res = model.generate_content(f"다음 내용을 비판적으로 분석해줘:\n{st.session_state.o_resp}")
+                    st.session_state.g_an = res.text
+                except: st.session_state.g_an = "분석 실패"
+
                 # GPT가 분석
-                o_client = OpenAI(api_key=gpt_key)
-                st.session_state.o_an = o_client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":f"평가해줘: {st.session_state.g_resp}"}]).choices[0].message.content
+                try:
+                    o_client = OpenAI(api_key=gpt_key)
+                    res = o_client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":f"다음 내용을 평가해줘:\n{st.session_state.g_resp}"}])
+                    st.session_state.o_an = res.choices[0].message.content
+                except: st.session_state.o_an = "분석 실패"
             
             c1, c2 = st.columns(2)
             with c1:
@@ -70,4 +81,4 @@ with tab2:
                 st.success("GPT의 평가")
                 st.write(st.session_state.o_an)
         else:
-            st.warning("먼저 1단계에서 질문을 입력하세요.")
+            st.warning("먼저 질문을 입력하세요.")
