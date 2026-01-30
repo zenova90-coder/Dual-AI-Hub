@@ -4,25 +4,61 @@ from openai import OpenAI
 from datetime import datetime
 import json
 import os
-import time
-import concurrent.futures # 병렬 처리를 위한 핵심 라이브러리
+import concurrent.futures
+import PyPDF2
+from io import StringIO
 
-# --- 1. 페이지 설정 ---
-st.set_page_config(page_title="Dual-AI Hub (Speed)", layout="wide")
-st.title("Dual-AI Insight Hub")
+# --- 1. 페이지 설정 (가장 먼저 실행) ---
+st.set_page_config(page_title="Dual-AI Hub (Private)", layout="wide")
+
+# ==========================================
+# 🔒 [보안] 비밀번호 잠금 장치 (문지기)
+# ==========================================
+def check_password():
+    """비밀번호가 맞는지 확인하는 함수"""
+    if st.session_state.get("password_correct", False):
+        return True
+
+    st.header("🔒 접속 권한 확인")
+    st.write("관리자가 설정한 비밀번호를 입력하세요.")
+    
+    password_input = st.text_input("비밀번호", type="password")
+    
+    if st.button("로그인"):
+        try:
+            # secrets에 설정된 비밀번호와 비교
+            if password_input == st.secrets["APP_PASSWORD"]:
+                st.session_state["password_correct"] = True
+                st.rerun()
+            else:
+                st.error("❌ 비밀번호가 틀렸습니다.")
+        except KeyError:
+            st.error("🚨 서버에 비밀번호(APP_PASSWORD) 설정이 안 되어 있습니다.")
+    
+    return False
+
+# 비밀번호가 틀리면 여기서 코드 실행을 멈춤 (아래 내용 절대 안 보여줌)
+if not check_password():
+    st.stop()
+
+# ==========================================
+# 🔓 로그인 성공 후 실행되는 메인 코드
+# ==========================================
+
+st.title("⚡ Dual-AI Insight Hub (Private)")
 
 # --- 2. API 키 설정 ---
 try:
     gemini_api_key = st.secrets["GEMINI_API_KEY"]
     gpt_api_key = st.secrets["GPT_API_KEY"]
 except KeyError:
-    st.error("🚨 API 키 설정이 필요합니다.")
+    st.error("🚨 API 키 설정이 필요합니다. (.streamlit/secrets.toml 확인)")
     st.stop()
 
 genai.configure(api_key=gemini_api_key)
 gpt_client = OpenAI(api_key=gpt_api_key)
 
-# --- 3. 모델 설정 (속도 최적화) ---
+# --- 3. 모델 설정 (자동 탐색) ---
 def get_best_available_model():
     try:
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
@@ -34,11 +70,9 @@ def get_best_available_model():
     except: return "models/gemini-pro"
 
 GEMINI_MODEL = get_best_available_model()
+GPT_MODEL = "gpt-4o-mini" # 속도와 가성비 최강
 
-# [중요] 속도를 위해 GPT 모델을 mini로 변경 (원하시면 "gpt-4o"로 수정 가능)
-GPT_MODEL = "gpt-4o-mini" 
-
-# --- 4. 데이터 관리 ---
+# --- 4. 데이터 관리 (파일 저장) ---
 DB_FILE = "chat_db.json"
 
 def load_data():
@@ -53,199 +87,216 @@ def save_data(sessions):
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(sessions, f, ensure_ascii=False, indent=4)
 
-# --- 5. 세션 상태 관리 ---
+# --- 5. 파일 처리 함수 (PDF/TXT) ---
+def process_uploaded_file(uploaded_file):
+    try:
+        text = ""
+        if uploaded_file.type == "application/pdf":
+            pdf_reader = PyPDF2.PdfReader(uploaded_file)
+            for page in pdf_reader.pages:
+                extracted = page.extract_text()
+                if extracted: text += extracted + "\n"
+        else: # 텍스트, 코드, 마크다운 등
+            stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
+            text = stringio.read()
+            
+        if not text.strip():
+            return None, "⚠️ 파일 내용은 비어있습니다. (이미지 스캔본 PDF일 수 있음)"
+        return text, f"✅ 로드 성공! ({len(text)}자)"
+    except Exception as e:
+        return None, f"❌ 파일 읽기 오류: {e}"
+
+# --- 6. 세션 및 캐시 초기화 ---
 if "sessions" not in st.session_state:
     st.session_state.sessions = load_data()
     st.session_state.active_index = 0
-
 if "system_role" not in st.session_state:
-    st.session_state.system_role = "너는 각 분야의 최고 전문가다. 사용자에게 친절하고 명확하게 설명하라."
-
+    st.session_state.system_role = "너는 각 분야의 최고 전문가다."
 if "active_index" not in st.session_state:
     st.session_state.active_index = 0
+if "file_cache" not in st.session_state:
+    st.session_state.file_cache = {"name": None, "content": None}
 
 def get_active_session():
     if st.session_state.active_index >= len(st.session_state.sessions):
         st.session_state.active_index = 0
     return st.session_state.sessions[st.session_state.active_index]
 
-# --- 6. [핵심] 병렬 처리 함수들 ---
+# --- 7. API 호출 함수 ---
 def call_gemini(prompt):
     model = genai.GenerativeModel(GEMINI_MODEL)
     return model.generate_content(prompt).text
 
 def call_gpt(messages):
-    response = gpt_client.chat.completions.create(
-        model=GPT_MODEL,
-        messages=messages
-    )
+    response = gpt_client.chat.completions.create(model=GPT_MODEL, messages=messages)
     return response.choices[0].message.content
 
-# --- 7. 사이드바 ---
+# --- 8. 사이드바 (컨트롤 패널) ---
 with st.sidebar:
-    st.header("🎭 AI 페르소나 설정")
-    input_role = st.text_area(
-        "AI들에게 부여할 역할(Role)", 
-        value=st.session_state.system_role,
-        height=100
-    )
-    if st.button("💾 역할 적용하기", use_container_width=True):
-        st.session_state.system_role = input_role
-        st.success("✅ 역할 부여 완료!")
+    st.success("🔐 로그인 완료") # 로그인 성공 표시
+    st.header("🎮 제어 센터")
+    
+    # [1] 자료 업로드
+    st.subheader("📂 자료 업로드")
+    uploaded_file = st.file_uploader("파일 선택", type=["pdf", "txt", "csv", "py", "md"])
+    
+    if uploaded_file:
+        if st.session_state.file_cache["name"] != uploaded_file.name:
+            with st.spinner("파일 분석 중..."):
+                content, msg = process_uploaded_file(uploaded_file)
+                if content:
+                    st.session_state.file_cache = {"name": uploaded_file.name, "content": content}
+                    st.success(msg)
+                else:
+                    st.error(msg)
+        else:
+            st.success(f"💾 메모리 유지 중: {uploaded_file.name}")
+    else:
+        st.session_state.file_cache = {"name": None, "content": None}
 
     st.divider()
-    st.header("🗂️ 대화 기록")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("➕ 새 대화", use_container_width=True):
-            new_session = {"title": "새 대화", "history": []}
-            st.session_state.sessions.insert(0, new_session)
+
+    # [2] 페르소나
+    with st.expander("🎭 AI 역할 설정"):
+        input_role = st.text_area("역할", value=st.session_state.system_role)
+        if st.button("💾 역할 적용"):
+            st.session_state.system_role = input_role
+            st.success("적용됨")
+
+    st.divider()
+
+    # [3] 대화방 관리
+    st.subheader("🗂️ 대화방")
+    active_session = get_active_session()
+    
+    new_title = st.text_input("🏷️ 방 이름 수정", value=active_session["title"], key=f"title_{st.session_state.active_index}")
+    if new_title != active_session["title"]:
+        active_session["title"] = new_title
+        save_data(st.session_state.sessions)
+        st.rerun()
+
+    c1, c2 = st.columns(2)
+    with c1: 
+        if st.button("➕ 새 대화"):
+            st.session_state.sessions.insert(0, {"title": "새 대화", "history": []})
             st.session_state.active_index = 0
             save_data(st.session_state.sessions)
             st.rerun()
-    with col2:
-        if st.button("🗑️ 전체 삭제", use_container_width=True):
-            if os.path.exists(DB_FILE): os.remove(DB_FILE)
+    with c2:
+        if st.button("🗑️ 삭제"):
             st.session_state.sessions = [{"title": "새 대화", "history": []}]
             st.session_state.active_index = 0
+            if os.path.exists(DB_FILE): os.remove(DB_FILE)
             st.rerun()
 
-    st.divider()
+    st.markdown("---")
     for i, session in enumerate(st.session_state.sessions):
-        label = session["title"]
-        if len(label) > 12: label = label[:12] + "..."
+        label = session["title"][:15] + "..." if len(session["title"]) > 15 else session["title"]
         if i == st.session_state.active_index:
-            st.button(f"📂 {label}", key=f"s_{i}", use_container_width=True, disabled=True)
+            st.button(f"📂 {label}", key=f"s{i}", disabled=True)
         else:
-            if st.button(f"📄 {label}", key=f"s_{i}", use_container_width=True):
+            if st.button(f"📄 {label}", key=f"s{i}"):
                 st.session_state.active_index = i
                 st.rerun()
 
-# --- 8. 메인 로직 (병렬 처리 적용) ---
+# --- 9. 메인 로직 (병렬 처리 + 파일 분석) ---
 active_session = get_active_session()
 chat_history = active_session["history"]
 current_role = st.session_state.system_role
+current_file_content = st.session_state.file_cache["content"]
+
+# 분석 트리거
+trigger_analysis = False
+auto_prompt = ""
+
+if current_file_content:
+    st.info(f"📎 **{st.session_state.file_cache['name']}** 내용을 참조합니다.")
+    if st.button("📑 파일 요약 및 분석 실행", use_container_width=True):
+        trigger_analysis = True
+        auto_prompt = "이 파일의 핵심 내용을 요약하고 분석해줘."
 
 user_input = st.chat_input("질문을 입력하세요...")
 
-if user_input:
-    if len(chat_history) == 0:
-        active_session["title"] = user_input
+if user_input or trigger_analysis:
+    final_question = user_input if user_input else auto_prompt
+
+    # 첫 대화면 제목 자동 변경
+    if len(chat_history) == 0 and active_session["title"] == "새 대화":
+        active_session["title"] = final_question[:20]
         save_data(st.session_state.sessions)
+        st.rerun()
 
-    with st.status("⚡ 초고속 병렬 연산 중...", expanded=True) as status:
-        turn_data = {"q": user_input, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")}
-        
-        # ThreadPoolExecutor를 사용한 병렬 처리
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+    with st.status("⚡ 보안 접속 중... AI가 분석을 시작합니다.", expanded=True) as status:
+        try:
+            turn_data = {"q": final_question, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")}
             
-            # --- STEP 1: 답변 생성 (동시 출발) ---
-            st.write(f"1️⃣ 답변 생성 중 (Role: {current_role[:10]}...)")
-            
-            # Gemini 요청 준비
-            gemini_prompt = f"System Instruction: {current_role}\n\nQuestion: {user_input}"
-            future_g_resp = executor.submit(call_gemini, gemini_prompt)
-            
-            # GPT 요청 준비
-            gpt_messages = [
-                {"role": "system", "content": current_role},
-                {"role": "user", "content": user_input}
-            ]
-            future_o_resp = executor.submit(call_gpt, gpt_messages)
-            
-            # 결과 대기 및 수집
-            turn_data["g_resp"] = future_g_resp.result()
-            turn_data["o_resp"] = future_o_resp.result()
-
-            # --- STEP 2: 교차 분석 (동시 출발) ---
-            st.write("2️⃣ 자유 토론 및 비평 중...")
-            
-            # Gemini에게 GPT 비평 요청
-            g_an_prompt = f"""
-            [당신의 역할]: {current_role}
-            위 역할로서 Chat GPT의 답변을 검토하라.
-            
-            [중요 지시사항]:
-            1. '강점'이나 '약점' 같은 단어를 사용하여 기계적으로 목록을 만들지 마라.
-            2. 대신, 답변을 읽고 전문가로서 느끼는 가장 날카로운 통찰이나, 혹은 치명적인 오류 하나에 집중해서 서술하라.
-            3. 대화하듯이 자연스럽게 비평하라.
-            
-            [Chat GPT 답변]: {turn_data['o_resp']}
-            """
-            future_g_an = executor.submit(call_gemini, g_an_prompt)
-            
-            # GPT에게 Gemini 비평 요청
-            o_an_messages = [
-                {"role": "system", "content": current_role},
-                {"role": "user", "content": f"""
-                다음 Gemini의 답변을 평가하라.
+            # 파일 내용이 있다면 프롬프트에 결합 (최대 3만자)
+            context_input = final_question
+            if current_file_content:
+                safe_content = current_file_content[:30000]
+                context_input = f"""
+                [참고 자료 (파일)]:
+                {safe_content}
+                ...(생략됨)...
                 
-                [중요 지시사항]:
-                1. '장점/단점' 리스트를 나열하는 식상한 방식은 금지한다.
-                2. 이 답변이 {user_input}이라는 문제를 해결하는 데 있어 얼마나 효과적인지, 혹은 어떤 부분이 비현실적인지 핵심만 찔러라.
-                3. 동료 전문가에게 피드백을 주듯 구체적이고 실질적인 내용을 말하라.
+                [사용자 요청]: {final_question}
+                """
+
+            # 병렬 처리 시작
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                # 1. 답변
+                st.write(f"1️⃣ 답변 생성 중... (Role: {current_role[:10]})")
+                f_g = executor.submit(call_gemini, f"System: {current_role}\n\n{context_input}")
+                f_o = executor.submit(call_gpt, [{"role": "system", "content": current_role}, {"role": "user", "content": context_input}])
                 
-                [Gemini 답변]: {turn_data['g_resp']}
-                """}
-            ]
-            future_o_an = executor.submit(call_gpt, o_an_messages)
-            
-            # 결과 수집
-            turn_data["g_an"] = future_g_an.result()
-            turn_data["o_an"] = future_o_an.result()
+                turn_data["g_resp"] = f_g.result()
+                turn_data["o_resp"] = f_o.result()
 
-            # --- STEP 3: 최종 결론 (이건 순차적으로) ---
-            st.write("3️⃣ 최종 결론 도출 중...")
-            final_prompt = f"""
-            당신은 {current_role} 역할을 맡은 최종 의사결정권자입니다.
-            두 AI의 의견과 상호 비판을 종합하여 최적의 솔루션을 제시하십시오.
-            비평에서 지적된 문제점은 반드시 수정하여 반영하십시오.
-            
-            [질문]: {user_input}
-            [Gemini 의견]: {turn_data['g_resp']}
-            [GPT 의견]: {turn_data['o_resp']}
-            [Gemini 비평]: {turn_data['g_an']}
-            [GPT 비평]: {turn_data['o_an']}
-            """
-            
-            # 결론은 가장 똑똑한 GPT에게 맡김 (여기서는 그대로 둠)
-            turn_data["final_con"] = call_gpt([{"role": "user", "content": final_prompt}])
+                # 2. 비평
+                st.write("2️⃣ 교차 검증 중...")
+                f_g_an = executor.submit(call_gemini, f"Role: {current_role}\nEvaluate GPT's answer. Don't use Pros/Cons list.\n\nGPT Answer: {turn_data['o_resp']}")
+                f_o_an = executor.submit(call_gpt, [{"role": "system", "content": current_role}, {"role": "user", "content": f"Evaluate Gemini's answer. Don't use Pros/Cons list.\n\nGemini Answer: {turn_data['g_resp']}"}])
+                
+                turn_data["g_an"] = f_g_an.result()
+                turn_data["o_an"] = f_o_an.result()
 
-            # 저장 및 완료
-            active_session["history"].append(turn_data)
-            save_data(st.session_state.sessions)
-            
-            status.update(label="✅ 분석 완료!", state="complete", expanded=False)
-            # time.sleep(1) # 속도를 위해 딜레이 삭제
-            st.rerun()
+                # 3. 결론
+                st.write("3️⃣ 최종 결론 도출...")
+                final_p = f"""
+                Role: {current_role}
+                Task: Synthesize final conclusion. Fix errors found in review.
+                
+                Q: {final_question}
+                Gemini: {turn_data['g_resp']}
+                GPT: {turn_data['o_resp']}
+                Review(G): {turn_data['g_an']}
+                Review(O): {turn_data['o_an']}
+                """
+                turn_data["final_con"] = call_gpt([{"role": "user", "content": final_p}])
 
-# --- 9. 화면 출력 ---
+                active_session["history"].append(turn_data)
+                save_data(st.session_state.sessions)
+                
+                status.update(label="✅ 분석 완료!", state="complete", expanded=False)
+                st.rerun()
+
+        except Exception as e:
+            st.error(f"❌ 오류 발생: {e}")
+
+# --- 10. 결과 출력 ---
 if chat_history:
-    st.caption(f"🕒 현재 대화: {len(chat_history)}개의 분석 기록")
-    total_count = len(chat_history)
-    
+    st.caption(f"🕒 기록: {len(chat_history)}건 | 현재 방: {active_session['title']}")
     for i, chat in enumerate(reversed(chat_history)):
-        idx = total_count - i
+        idx = len(chat_history) - i
         st.markdown(f"### Q{idx}. {chat['q']}")
-        
-        tab1, tab2, tab3 = st.tabs(["💬 의견 대립", "⚔️ 교차 검증", "🏆 최종 결론"])
-        
-        with tab1:
+        t1, t2, t3 = st.tabs(["💬 답변", "⚔️ 비평", "🏆 결론"])
+        with t1:
             c1, c2 = st.columns(2)
-            with c1: 
-                st.info("💎 다온 (Gemini)")
-                st.write(chat['g_resp'])
-            with c2: 
-                st.success("🧠 루 (Chat GPT)")
-                st.write(chat['o_resp'])
-        with tab2:
+            with c1: st.info("💎 다온"); st.write(chat['g_resp'])
+            with c2: st.success("🧠 루"); st.write(chat['o_resp'])
+        with t2:
             c1, c2 = st.columns(2)
-            with c1: 
-                st.info("비평")
-                st.write(chat['g_an'])
-            with c2: 
-                st.success("평가")
-                st.write(chat['o_an'])
-        with tab3:
-            st.markdown(chat['final_con'])
+            with c1: st.info("비평"); st.write(chat['g_an'])
+            with c2: st.success("평가"); st.write(chat['o_an'])
+        with t3: st.markdown(chat['final_con'])
         st.divider()
