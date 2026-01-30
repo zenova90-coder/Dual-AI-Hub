@@ -19,43 +19,81 @@ except KeyError:
 genai.configure(api_key=gemini_api_key)
 gpt_client = OpenAI(api_key=gpt_api_key)
 
-# 내부적으로 사용할 모델 (안정성 최우선, 사용자에게는 안 보임)
-INTERNAL_MODEL_NAME = "gemini-1.5-flash"
+# --- 3. [수정됨] 사용 가능한 모델 자동 탐색 함수 ---
+def get_working_gemini_model():
+    """
+    내 계정에서 실제로 작동하는 Gemini 모델을 자동으로 찾습니다.
+    (404 에러 방지용)
+    """
+    try:
+        # 현재 사용 가능한 모든 모델 목록을 가져옴
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # 우리가 선호하는 모델 순서 (Flash -> Pro -> 구버전)
+        # models/ 접두사가 있는 경우와 없는 경우 모두 대비
+        preferences = [
+            'models/gemini-1.5-flash', 
+            'gemini-1.5-flash',
+            'models/gemini-pro', 
+            'gemini-pro'
+        ]
+        
+        for pref in preferences:
+            if pref in available_models:
+                return pref
+        
+        # 선호 모델이 없으면 목록의 첫 번째 모델 반환
+        if available_models:
+            return available_models[0]
+        
+        # 목록조차 못 가져오면 가장 기본 모델 시도
+        return "gemini-pro"
+        
+    except Exception:
+        # API 호출 실패 시 기본값
+        return "gemini-pro"
 
-# --- 3. 세션 상태 초기화 ---
+# 내부적으로 확정된 모델명 (화면엔 안 보임)
+VALID_MODEL_NAME = get_working_gemini_model()
+
+# --- 4. 세션 상태 초기화 ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# --- 4. 재시도(Retry) 로직 함수 ---
-def generate_with_retry(model_name, prompt, retries=3, delay=5):
+# --- 5. 재시도(Retry) & 모델 호출 로직 ---
+def generate_with_retry(prompt, retries=3, delay=5):
     """
-    429 에러(할당량 초과) 발생 시, 잠시 대기 후 재시도하는 안정화 함수
+    429 에러(할당량 초과) 발생 시, 잠시 대기 후 재시도
     """
-    model = genai.GenerativeModel(model_name)
+    # models/ 접두사를 제거해야 잘 작동하는 라이브러리 버전을 대비해 문자열 처리
+    clean_model_name = VALID_MODEL_NAME.replace("models/", "")
+    model = genai.GenerativeModel(clean_model_name)
     
     for attempt in range(retries):
         try:
             response = model.generate_content(prompt)
             return response.text
         except Exception as e:
-            if "429" in str(e):
+            error_msg = str(e)
+            if "429" in error_msg: # 할당량 초과
                 if attempt < retries - 1:
                     st.toast(f"⏳ 사용량 조절 중... {delay}초 후 재시도합니다.")
                     time.sleep(delay)
                     continue
                 else:
                     return "❌ (접속량 폭주) 잠시 후 다시 질문해주세요."
+            elif "404" in error_msg: # 모델 찾기 실패 시 즉시 중단이 아닌 안내
+                 return "❌ 모델 설정 오류: API 키가 해당 모델을 지원하지 않습니다."
             else:
-                return f"❌ 에러 발생: {str(e)}"
+                return f"❌ 에러 발생: {error_msg}"
 
-# --- 5. 사이드바 (심플 모드) ---
+# --- 6. 사이드바 ---
 with st.sidebar:
-    # 버전 정보 없이 깔끔하게 초기화 버튼만 유지
     if st.button("➕ 새 대화 시작하기 (초기화)", use_container_width=True):
         st.session_state.chat_history = []
         st.rerun()
 
-# --- 6. 메인 로직 ---
+# --- 7. 메인 로직 ---
 user_input = st.chat_input("질문을 입력하세요. (답변 -> 분석 -> 결론 자동 진행)")
 
 if user_input:
@@ -70,8 +108,8 @@ if user_input:
             st.write("1️⃣ 다온(Gemini)과 루(Chat GPT)가 답변 작성 중...")
             
             # 다온 (Gemini)
-            turn_data["g_resp"] = generate_with_retry(INTERNAL_MODEL_NAME, user_input)
-            time.sleep(1) # 과부하 방지 쿨타임
+            turn_data["g_resp"] = generate_with_retry(user_input)
+            time.sleep(1) # 과부하 방지
 
             # 루 (Chat GPT)
             o_res = gpt_client.chat.completions.create(
@@ -85,7 +123,7 @@ if user_input:
             
             # 다온 -> 루 비평
             prompt_g = f"다음은 Chat GPT의 답변이다. 논리적 허점을 비판해줘:\n{turn_data['o_resp']}"
-            turn_data["g_an"] = generate_with_retry(INTERNAL_MODEL_NAME, prompt_g)
+            turn_data["g_an"] = generate_with_retry(prompt_g)
             time.sleep(1)
 
             # 루 -> 다온 비평
@@ -120,11 +158,10 @@ if user_input:
         except Exception as e:
             st.error(f"시스템 에러: {e}")
 
-# --- 7. 결과 출력 (누적형 탭) ---
+# --- 8. 결과 출력 ---
 if st.session_state.chat_history:
     tab1, tab2, tab3 = st.tabs(["💬 의견 대립", "⚔️ 교차 검증", "🏆 최종 결론"])
     
-    # 최신 대화가 아래에 쌓임
     for i, chat in enumerate(st.session_state.chat_history):
         idx = i + 1
         with tab1:
